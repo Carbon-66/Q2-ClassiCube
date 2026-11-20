@@ -1,0 +1,7 @@
+# The thumbstick pushed forward, 40 moves 1 ms apart and its release right behind them, sent as Q2 Pod sends
+# (Q2POD_DROP=1: dropped when the game's queue is full) at 30 frames a second: the player must stop.
+2.0 t d 57 200
+2.05 burst 40 57 200 1
+2.093 t u 57 200
+2.6 snap stuckA
+3.6 snap stuckB

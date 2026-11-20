@@ -1,0 +1,17 @@
+# The touchscreen's device (Q2_TOUCHDEV, a FIFO here) and Q2 Pod's datagrams. The stick held, its
+# thumb resting (nothing from the screen for seconds), and Centre pressed: still held. Then the
+# thumb lifts: the device says so (ev 0) but the release datagram never comes (the firmware's
+# pressure filter lost it after the ring's use): let go within 300 ms; liftC to liftD: still.
+# Then a tap whose release does come: nothing to let go. test/run.sh checks the log.
+2.0 ev 1
+2.02 t d 57 200
+2.05 hold 3 57 200 20
+3.5 k d 218
+3.6 k u 218
+5.2 ev 0
+6.2 snap liftC
+7.0 snap liftD
+7.2 ev 1
+7.25 t d 187 120
+7.4 ev 0
+7.45 t u 187 120

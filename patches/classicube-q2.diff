@@ -1,0 +1,1923 @@
+diff --git a/src/Block.c b/src/Block.c
+index a7e91f4..416ee4d 100644
+--- a/src/Block.c
++++ b/src/Block.c
+@@ -428,6 +428,14 @@ cc_bool Block_IsCustomDefined(BlockID block) {
+ }
+ 
+ /* Sets whether the given block has been changed from default */
++#ifdef CC_BUILD_Q2
++/* Graphics options' Fast leaves, switched: leaves' draw type again, and their culling */
++void Q2_RefreshLeaves(void) {
++	Block_ResetProps(BLOCK_LEAVES);
++	Block_UpdateCulling(BLOCK_LEAVES);
++}
++#endif
++
+ static void Block_SetCustomDefined(BlockID block, cc_bool defined) {
+ 	if (defined) {
+ 		definedCustomBlocks[block >> 5] |=  (1u << (block & 0x1F));
+@@ -498,6 +506,10 @@ void Block_ResetProps(BlockID block) {
+ 	}
+ 
+ 	Block_SetDrawType(block, def->draw);
++#ifdef CC_BUILD_Q2
++	/* q2-fastleaves: leaves drawn as solid blocks (Q2_FastLeaves, Platform_Q2.c) */
++	{ extern cc_bool Q2_FastLeaves; if (block == BLOCK_LEAVES && Q2_FastLeaves) Block_SetDrawType(block, DRAW_OPAQUE); }
++#endif
+ 	Block_CalcRenderBounds(block);
+ 	Block_CalcLightOffset(block);
+ 
+diff --git a/src/Builder.c b/src/Builder.c
+index dd3f3f2..c4346aa 100644
+--- a/src/Builder.c
++++ b/src/Builder.c
+@@ -360,6 +360,31 @@ static void OutputChunkPartsMeta(int x, int y, int z, struct ChunkInfo* info) {
+ 	}
+ }
+ 
++
++#ifdef CC_BUILD_Q2
++/* The box around the chunk's vertices (its faces, sprites and water), whole blocks from the chunk's
++ * corner (x1, y1, z1): occlusion culling tests it. The whole chunk's box reached up into the sky
++ * over ground that fills only its bottom, and its outline on the screen then took in the sky's
++ * tiles, where nothing is drawn to hide it: half the triangles drawn in the bench view were in
++ * chunks with no pixel left in the frame. */
++static void Q2_ChunkBounds(struct ChunkInfo* info, int x1, int y1, int z1, int count) {
++	float minX = 1e9f, minY = 1e9f, minZ = 1e9f, maxX = -1e9f, maxY = -1e9f, maxZ = -1e9f;
++	int i;
++	for (i = 0; i < count; i++)
++	{
++		const struct VertexTextured* v = &Builder_Vertices[i];
++		if (v->x < minX) minX = v->x; if (v->x > maxX) maxX = v->x;
++		if (v->y < minY) minY = v->y; if (v->y > maxY) maxY = v->y;
++		if (v->z < minZ) minZ = v->z; if (v->z > maxZ) maxZ = v->z;
++	}
++#define Q2_BOUND(v, lo, ceilIt) (cc_uint8)max(0, min(CHUNK_SIZE, (ceilIt) ? (int)Math_Ceil((v) - (lo)) : (int)Math_Floor((v) - (lo))))
++	info->q2MinX = Q2_BOUND(minX, x1, 0); info->q2MaxX = Q2_BOUND(maxX, x1, 1);
++	info->q2MinY = Q2_BOUND(minY, y1, 0); info->q2MaxY = Q2_BOUND(maxY, y1, 1);
++	info->q2MinZ = Q2_BOUND(minZ, z1, 0); info->q2MaxZ = Q2_BOUND(maxZ, z1, 1);
++#undef Q2_BOUND
++}
++#endif
++
+ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ #if CC_BUILD_MAXSTACK <= (32 * 1024)
+ 	void* mem        = TempMem_Alloc((EXTCHUNK_SIZE_3 * sizeof(BlockID)) + (CHUNK_SIZE_3 * FACE_COUNT));
+@@ -462,6 +487,9 @@ cc_bool Builder_MakeChunk(struct ChunkInfo* info) {
+ 		BuildPartVbs(&MapRenderer_PartsTranslucent[curIdx]);
+ 	}
+ #else
++#ifdef CC_BUILD_Q2
++	Q2_ChunkBounds(info, x1, y1, z1, totalVerts);
++#endif
+ 	Gfx_UnlockVb(info->vb);
+ #endif
+ 	return true;
+diff --git a/src/Camera.c b/src/Camera.c
+index a82a0d8..7b65ba6 100644
+--- a/src/Camera.c
++++ b/src/Camera.c
+@@ -376,7 +376,9 @@ static void OnInit(void) {
+ 	Event_Register_(&ControllerEvents.AxisUpdate, NULL, OnAxisUpdate);
+ 	Event_Register_(&UserEvents.HackPermsChanged, NULL, OnHacksChanged);
+ 
+-#ifdef CC_BUILD_WIN
++#if defined CC_BUILD_Q2
++	Camera.Sensitivity = Options_GetInt(OPT_SENSITIVITY, 1, 200, 42);
++#elif defined CC_BUILD_WIN
+ 	Camera.Sensitivity = Options_GetInt(OPT_SENSITIVITY, 1, 200, 40);
+ #elif defined CC_BUILD_SYMBIAN_3 || defined CC_BUILD_SYMBIAN_S60V5 || defined CC_BUILD_WINCE
+ 	Camera.Sensitivity = Options_GetInt(OPT_SENSITIVITY, 1, 200, 70);
+diff --git a/src/Core.h b/src/Core.h
+index 95be4ac..ad255d1 100644
+--- a/src/Core.h
++++ b/src/Core.h
+@@ -189,7 +189,22 @@ typedef cc_uint8  cc_bool;
+ /*#define CC_BUILD_GL11*/
+ 
+ #ifndef CC_BUILD_MANUAL
+-#if defined NXDK
++#if defined PLAT_Q2
++	/* Shanling Q2 under Q2 Pod: a card game drawing on the Linux framebuffer (q2/ in q2-classicube). */
++	/* Checked before __linux__, which the MIPS Linux target also defines. */
++	#define CC_BUILD_Q2
++	#define CC_BUILD_CONSOLE
++	#define CC_BUILD_TOUCH
++	#define CC_BUILD_COOPTHREADED
++	#define CC_BUILD_NOMUSIC
++	#undef  CC_BUILD_NETWORKING
++	#undef  CC_BUILD_RESOURCES
++	#undef  CC_BUILD_FREETYPE
++	#undef  CC_BUILD_PLUGINS
++	#define CC_AUD_BACKEND_Q2 100 /* q2/Audio_Q2.c: ALSA, with Q2 Pod's audio=1 */
++	#define DEFAULT_AUD_BACKEND CC_AUD_BACKEND_Q2
++	#define DEFAULT_GFX_BACKEND CC_GFX_BACKEND_SOFTGPU
++#elif defined NXDK
+ 	/* XBox also defines _WIN32 */
+ 	#define CC_BUILD_XBOX
+ 	#define CC_BUILD_CONSOLE
+diff --git a/src/Drawer2D.c b/src/Drawer2D.c
+index 8b206a3..ff43e04 100644
+--- a/src/Drawer2D.c
++++ b/src/Drawer2D.c
+@@ -710,7 +710,12 @@ static void OnInit(void) {
+ 	OnReset();
+ 	TextureEntry_Register(&default_entry);
+ 
++#ifdef CC_BUILD_Q2
++	/* the Q2's "system font" (no FreeType: ClassiCube's own fallback font) reads better there */
++	Drawer2D.BitmappedText    = Game_ClassicMode || !Options_GetBool(OPT_USE_CHAT_FONT, true);
++#else
+ 	Drawer2D.BitmappedText    = Game_ClassicMode || !Options_GetBool(OPT_USE_CHAT_FONT, false);
++#endif
+ 	Drawer2D.BlackTextShadows = Options_GetBool(OPT_BLACK_TEXT, false);
+ }
+ 
+diff --git a/src/EnvRenderer.c b/src/EnvRenderer.c
+index 5e7cf6a..1165077 100644
+--- a/src/EnvRenderer.c
++++ b/src/EnvRenderer.c
+@@ -23,6 +23,13 @@
+ cc_bool EnvRenderer_Legacy, EnvRenderer_Minimal;
+ 
+ static CC_INLINE int EnvRenderer_AxisSize(void) {
++#ifdef CC_BUILD_Q2
++	/* the Q2's software renderer: 64-block quads for the map's border. At 2048, a quad passing
++	 * near the eye projected past the float edge functions' precision and dropped out (dark
++	 * triangles of bedrock in the border's sea); 64 draws right, with far fewer corners to
++	 * transform than the vertex-size limit's 8 */
++	if (Gfx.Limitations & GFX_LIMIT_MAX_VERTEX_SIZE) return 64;
++#endif
+ 	if (Gfx.Limitations & GFX_LIMIT_MAX_VERTEX_SIZE) return 8;
+ 
+ 	return EnvRenderer_Legacy ? 128 : 2048;
+@@ -818,6 +825,77 @@ void EnvRenderer_RenderMapSides(void) {
+ 	RenderBorders(Env.SidesBlock, sides_vb, sides_tex, sides_vertices);
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* The stand-in sea: at the Q2's short view distances much of a 128-block world isn't drawn (past the
++ * far plane, at the view distance), and from above, where a column of the map wasn't drawn, the eye
++ * went down to the bedrock under the map: dark squares in the sea, coming and going as the camera
++ * moved (OpenGL builds hide it with fog). Such a column gets the border's water instead, at its
++ * height, with its texture and tint: past what's drawn the map looks like the ocean around it.
++ * MapRenderer tests whole columns (MapRenderer_Q2ColumnShown), so the stand-in covers the columns
++ * not drawn and none that are. */
++cc_bool MapRenderer_Q2ColumnShown(int cx, int cz);
++int Frustum_TestBox(float x1, float y1, float z1, float x2, float y2, float z2, cc_bool far);
++static GfxResourceID q2_seaVb;
++static int q2_seaMax;
++
++static void Q2_RenderStandInSea(void) {
++	BlockID block = Env.EdgeBlock;
++	int chunksX, chunksZ, cx, cz, quads = 0, waterY;
++	PackedCol color;
++	float y, off;
++	struct VertexTextured* v;
++	if (!World.Loaded || Blocks.Draw[block] == DRAW_GAS || !edges_tex) return;
++
++	waterY = Env.EdgeHeight - 1; /* the top water block's row */
++	if (waterY < 0 || waterY >= World.Height) return;
++	chunksX = World.ChunksX;
++	chunksZ = World.ChunksZ;
++
++	if (chunksX * chunksZ * 4 > q2_seaMax) {
++		Gfx_DeleteDynamicVb(&q2_seaVb);
++		q2_seaMax = chunksX * chunksZ * 4;
++		q2_seaVb  = Gfx_CreateDynamicVb(VERTEX_FORMAT_TEXTURED, q2_seaMax);
++		if (!q2_seaVb) { q2_seaMax = 0; return; }
++	}
++
++	color = Blocks.Brightness[block] ? PACKEDCOL_WHITE : Env.SunCol;
++	Block_Tint(color, block)
++	y   = (float)Env.EdgeHeight + Borders_YOffset(block);
++	off = Borders_HorOffset(block);
++
++	v = (struct VertexTextured*)Gfx_LockDynamicVb(q2_seaVb, VERTEX_FORMAT_TEXTURED, q2_seaMax);
++	for (cz = 0; cz < chunksZ; cz++)
++	{
++		for (cx = 0; cx < chunksX; cx++)
++		{
++			float x1, z1, x2, z2, u2, v2;
++			if (MapRenderer_Q2ColumnShown(cx, cz)) continue; /* drawn: the real water's there */
++
++			x1 = (float)(cx * CHUNK_SIZE); x2 = (float)min((cx + 1) * CHUNK_SIZE, World.Width);
++			z1 = (float)(cz * CHUNK_SIZE); z2 = (float)min((cz + 1) * CHUNK_SIZE, World.Length);
++			if (Frustum_TestBox(x1, y - 0.5f, z1, x2, y + 0.5f, z2, false) == FRUSTUM_OUTSIDE) continue;
++			u2 = x2 - x1; v2 = z2 - z1;
++			v->x = x1 + off; v->y = y; v->z = z1 + off; v->Col = color; v->U = 0;  v->V = 0;  v++;
++			v->x = x1 + off; v->y = y; v->z = z2 + off; v->Col = color; v->U = 0;  v->V = v2; v++;
++			v->x = x2 + off; v->y = y; v->z = z2 + off; v->Col = color; v->U = u2; v->V = v2; v++;
++			v->x = x2 + off; v->y = y; v->z = z1 + off; v->Col = color; v->U = u2; v->V = 0;  v++;
++			quads++;
++		}
++	}
++	Gfx_UnlockDynamicVb(q2_seaVb);
++	if (!quads) return;
++
++	Gfx_SetupAlphaState(Blocks.Draw[block]);
++	Gfx_EnableMipmaps();
++	Gfx_BindTexture(edges_tex);
++	Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
++	Gfx_BindDynamicVb(q2_seaVb);
++	Gfx_DrawVb_IndexedTris(quads * 4);
++	Gfx_DisableMipmaps();
++	Gfx_RestoreAlphaState(Blocks.Draw[block]);
++}
++#endif
++
+ void EnvRenderer_RenderMapEdges(void) {
+ 	/* Do not draw water when player cannot see it */
+ 	/* Fixes some 'depth bleeding through' issues with 16 bit depth buffers on large maps */
+@@ -829,6 +907,9 @@ void EnvRenderer_RenderMapEdges(void) {
+ 		if (!edges_vb) return;
+ 	}
+ 	RenderBorders(Env.EdgeBlock, edges_vb, edges_tex, edges_vertices);
++#ifdef CC_BUILD_Q2
++	Q2_RenderStandInSea();
++#endif
+ }
+ 
+ 
+@@ -873,6 +954,10 @@ static void DeleteStaticVbs(void) {
+ 
+ static void OnContextLost(void* obj) {
+ 	DeleteStaticVbs();
++#ifdef CC_BUILD_Q2
++	Gfx_DeleteDynamicVb(&q2_seaVb);
++	q2_seaMax = 0;
++#endif
+ 	DeleteWeatherVB();
+ 	Gfx_DeleteTexture(&sides_tex);
+ 	Gfx_DeleteTexture(&edges_tex);
+diff --git a/src/Graphics_SoftGPU.c b/src/Graphics_SoftGPU.c
+index aa0ba88..a136bba 100644
+--- a/src/Graphics_SoftGPU.c
++++ b/src/Graphics_SoftGPU.c
+@@ -23,6 +23,20 @@ static int db_stride;
+ static void* gfx_vertices;
+ static GfxResourceID white_square;
+ 
++#ifdef CC_BUILD_Q2
++/* The render scale (q2-renderscale, Graphics options in Smooth lighting's place): the world is
++ * drawn in a smaller picture (q2_low) and stretched over the view's (the nearest pixel) before the
++ * first 2D draw, so the hotbar, text and menus stay sharp. colorBuffer, depthBuffer and the sizes
++ * below are the picture being drawn: the world's (q2_low, or the view's at 100%) from a clear, the
++ * view's from the first 2D draw on. */
++static BitmapCol* q2_full;      /* the view's picture (fb_bmp) */
++static int q2_fullW, q2_fullH;  /* 375 x 320 */
++static BitmapCol* q2_low;       /* the world's, below 100% (else NULL: drawn in q2_full) */
++static int q2_lowW, q2_lowH;
++static int q2_scalePct = 100;
++static cc_bool q2_scenePending; /* the world's picture is drawn but not yet stretched */
++#endif
++
+ static void Gfx_RestoreState(void) {
+ 	InitDefaultResources();
+ 
+@@ -43,13 +57,25 @@ void Gfx_Create(void) {
+ 	Gfx.MaxTexHeight = 4096;
+ 	Gfx.Created      = true;
+ 	Gfx.BackendType  = CC_GFX_BACKEND_SOFTGPU;
++#ifdef CC_BUILD_Q2
++	/* the map's border (the water and bedrock past the world's edge, EnvRenderer.c) in 64-block
++	 * quads, not up to 2048: a huge quad passing near or behind the eye projects corners thousands
++	 * of pixels off the screen, past the float edge functions' precision, and whole triangles or
++	 * strips of the edge water dropped out (the bedrock below showed through as dark patches) */
++	Gfx.Limitations  = GFX_LIMIT_MINIMAL | GFX_LIMIT_MAX_VERTEX_SIZE;
++#else
+ 	Gfx.Limitations  = GFX_LIMIT_MINIMAL;
++#endif
+ }
+ 
+ static void DestroyBuffers(void) {
+ 	Window_FreeFramebuffer(&fb_bmp);
+ 	Mem_Free(depthBuffer);
+ 	depthBuffer = NULL;
++#ifdef CC_BUILD_Q2
++	if (q2_low) Mem_Free(q2_low);
++	q2_low = NULL;
++#endif
+ }
+ 
+ void Gfx_Free(void) { 
+@@ -158,12 +184,112 @@ static void ClearColorBuffer(void) {
+ 	}
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* Occlusion culling (q2-occlusion, Q2_Occlusion in Platform_Q2.c): MapRenderer asks, before drawing
++ * a chunk, whether its box would be hidden anyway, all behind what's already been drawn. Chunks are
++ * drawn nearest first, so the hills, walls and floors in front fill the depth buffer before the
++ * chunks they hide are reached. The test reads a coarse copy of the depth buffer: for each 8 x 8
++ * pixel tile, the farthest depth in it, worked out again only when something has drawn in the tile
++ * since (the tile is marked by every triangle drawn with depth writes over its bounding box). The
++ * box is hidden where every tile it covers is all nearer than the box's nearest corner: then every
++ * pixel of the chunk would fail the depth test, and the picture is the same without it. */
++#define Q2_TILE_SHIFT 3
++#define Q2_TILES_MAX  (64 * 64)
++extern cc_bool Q2_Occlusion;
++static float    q2_tileFar[Q2_TILES_MAX];
++/* The depth buffer in 16 bits (from 1.21; Q2_DEPTH16=0 builds the float one): half the memory
++ * (240 KB, not 480) to read and write for each pixel tested, and half to clear each frame, and on
++ * MIPS an integer test (a shift, a load, a compare) in place of two float compares. Counted on the
++ * host (test/count.sh, bench view): 18% fewer L1 and 15% fewer last-level cache misses a frame.
++ * z/w is kept in 65280ths: its step to the next block face at the view distance (45) is about a
++ * third of a block, and frames differ from the float buffer's only in single pixels along edges. */
++#ifndef Q2_DEPTH16
++#define Q2_DEPTH16 1
++#endif
++#define Q2_ZSCALE 2139095040.0f /* 65280 * 32768: see DrawTriangle3D */
++#define Math_Clamp_(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
++static cc_uint8 q2_tileDirty[Q2_TILES_MAX];
++static int      q2_tilesX, q2_tilesY; /* 0: the screen's too big for the tiles, no culling */
++#define Q2_FAR 100000000.0f
++#endif
++
+ static void ClearDepthBuffer(void) {
+ 	int i, size = fb_width * fb_height;
++#if Q2_DEPTH16
++	Mem_Set(depthBuffer, 0xFF, size * 2);
++#else
+ 	for (i = 0; i < size; i++) depthBuffer[i] = 100000000.0f;
++#endif
++#ifdef CC_BUILD_Q2
++	q2_tilesX = (fb_width  + (1 << Q2_TILE_SHIFT) - 1) >> Q2_TILE_SHIFT;
++	q2_tilesY = (fb_height + (1 << Q2_TILE_SHIFT) - 1) >> Q2_TILE_SHIFT;
++	if (q2_tilesX * q2_tilesY > Q2_TILES_MAX) q2_tilesX = q2_tilesY = 0;
++	for (i = 0; i < q2_tilesX * q2_tilesY; i++) { q2_tileFar[i] = Q2_FAR; q2_tileDirty[i] = 0; }
++#endif
++}
++
++#ifdef CC_BUILD_Q2
++/* Draws in buf (w x h): the sizes, and the viewport, its */
++static void Q2_UseTarget(BitmapCol* buf, int w, int h) {
++	colorBuffer = buf;
++	cb_stride   = w;
++	db_stride   = w;
++	fb_width    = w; fb_height = h;
++	fb_maxX     = w - 1; fb_maxY = h - 1;
++	vp_hwidth   = w / 2.0f;
++	vp_hheight  = h / 2.0f;
++}
++
++/* The world's picture stretched over the view's, the nearest pixel (a row repeated is copied) */
++static void Q2_Stretch(void) {
++	static int srcX[1024];
++	int x, y, sy, lastSy = -1;
++	if (q2_fullW > 1024) return;
++	for (x = 0; x < q2_fullW; x++) srcX[x] = x * q2_lowW / q2_fullW;
++
++	for (y = 0; y < q2_fullH; y++)
++	{
++		BitmapCol* out = q2_full + y * q2_fullW;
++		const BitmapCol* in;
++		sy = y * q2_lowH / q2_fullH;
++		if (sy == lastSy) { Mem_Copy(out, out - q2_fullW, q2_fullW * BITMAPCOLOR_SIZE); continue; }
++		lastSy = sy;
++		in = q2_low + sy * q2_lowW;
++		for (x = 0; x < q2_fullW; x++) out[x] = in[srcX[x]];
++	}
+ }
+ 
++/* Before 2D, and at a frame's end: the world's picture onto the view's, then the view's drawn in */
++static void Q2_Begin2D(void) {
++	if (q2_scenePending && q2_low) Q2_Stretch();
++	q2_scenePending = false;
++	if (colorBuffer != q2_full) Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
++}
++
++/* The world's picture at pct percent of the view's each way (q2-renderscale): from the next frame */
++void Q2_SetRenderScale(int pct) {
++	if (pct < 25 || pct > 100) pct = 100;
++	q2_scalePct = pct;
++	if (q2_low && colorBuffer == q2_low) Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
++	q2_scenePending = false;
++	if (q2_low) { Mem_Free(q2_low); q2_low = NULL; }
++	if (!q2_full || pct == 100) return;
++
++	q2_lowW = (q2_fullW * pct + 50) / 100;
++	q2_lowH = (q2_fullH * pct + 50) / 100;
++	q2_low  = (BitmapCol*)Mem_TryAlloc(q2_lowW * q2_lowH, BITMAPCOLOR_SIZE);
++	if (!q2_low) Platform_LogConst("No memory for the render scale's picture: 100%");
++}
++int Q2_GetRenderScale(void) { return q2_scalePct; }
++#endif
++
+ void Gfx_ClearBuffers(GfxBuffers buffers) {
++#ifdef CC_BUILD_Q2
++	/* a new frame's world: in its own picture below 100% */
++	if (q2_low) Q2_UseTarget(q2_low, q2_lowW, q2_lowH);
++	else        Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
++	if (buffers & GFX_BUFFER_COLOR) q2_scenePending = true;
++#endif
+ 	if (buffers & GFX_BUFFER_COLOR) ClearColorBuffer();
+ 	if (buffers & GFX_BUFFER_DEPTH) ClearDepthBuffer();
+ }
+@@ -553,16 +679,42 @@ static void DrawTriangle2D(Vertex* V0, Vertex* V1, Vertex* V2) {
+ 	b2 = BitmapCol_B(tColor); \
+ 	B  = ( b1 * b2 ) >> 8;    \
+ 
+-static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
+-	int x0 = (int)V0->x, y0 = (int)V0->y;
+-	int x1 = (int)V1->x, y1 = (int)V1->y;
+-	int x2 = (int)V2->x, y2 = (int)V2->y;
+-	int minX = min(x0, min(x1, x2));
+-	int minY = min(y0, min(y1, y2));
+-	int maxX = max(x0, max(x1, x2));
+-	int maxY = max(y0, max(y1, y2));
++#ifdef CC_BUILD_Q2
++/* Pixels along a row between exact texture coordinates (q2-texspan; 0: every pixel exact): see
++ * DrawTriangle3D. Read with q2-cores before the first 3D draw. 0 by default: on the Q2, 8 drew no faster. */
++static int q2_texSpan = 0;
++/* two threads: bands of 1 << q2_bandShift rows each (q2-bandrows in options.txt: 1, 2, 4, 8, 16;
++ * 16 by default: on the host 16 drew fastest, 1 slowest, by about a tenth) */
++static int q2_bandShift = 4;
++/* each batch of quads: hidden quads skipped (Q2_QuadHidden; occlusion on, depth tested, tiles kept) */
++static cc_bool q2_occlusionNow;
++/* what the main thread is doing, for the stall watcher (Platform_Q2.c) */
++extern volatile const char* Q2_Phase;
++#endif
+ 
+-	int area = edgeFunction(x0,y0, x1,y1, x2,y2);
++#ifdef CC_BUILD_Q2
++/* The corners where they are, to a fraction of a pixel, not cut down to whole pixels: cut down,
++ * two triangles meeting along an edge could leave a hairline between them where a long merged
++ * face meets shorter ones (a T-junction), and the sky or the dark showed through the blocks.
++ * Every pixel's centre is tested against the exact edges instead. */
++typedef float TriCoord;
++#else
++typedef int TriCoord;
++#endif
++
++/* phase: the rows to fill, all (-1), or for two threads (Q2) the 16-row bands of one parity (0:
++ * rows 0-15, 32-47 and so on; 1: rows 16-31, 48-63...) */
++static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2, int phase) {
++	TriCoord x0 = (TriCoord)V0->x, y0 = (TriCoord)V0->y;
++	TriCoord x1 = (TriCoord)V1->x, y1 = (TriCoord)V1->y;
++	TriCoord x2 = (TriCoord)V2->x, y2 = (TriCoord)V2->y;
++	/* the pixels whose centres can be inside: the bounding box (whole, as the corners' pixels) */
++	int minX = (int)min(x0, min(x1, x2));
++	int minY = (int)min(y0, min(y1, y2));
++	int maxX = (int)max(x0, max(x1, x2));
++	int maxY = (int)max(y0, max(y1, y2));
++
++	TriCoord area = edgeFunction(x0,y0, x1,y1, x2,y2);
+ 	if (faceCulling) {
+ 		// https://gamedev.stackexchange.com/questions/203694/how-to-make-backface-culling-work-correctly-in-both-orthographic-and-perspective
+ 		if (area < 0) return;
+@@ -593,9 +745,9 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
+ 	
+ 	// https://fgiesen.wordpress.com/2013/02/10/optimizing-the-basic-rasterizer/
+ 	// Essentially these are the deltas of edge functions between X/Y and X/Y + 1 (i.e. one X/Y step)
+-	int dx01  = y0 - y1, dy01 = x1 - x0;
+-	int dx12  = y1 - y2, dy12 = x2 - x1;
+-	int dx20  = y2 - y0, dy20 = x0 - x2;
++	TriCoord dx01  = y0 - y1, dy01 = x1 - x0;
++	TriCoord dx12  = y1 - y2, dy12 = x2 - x1;
++	TriCoord dx20  = y2 - y0, dy20 = x0 - x2;
+ 
+ 	float bc0_start = edgeFunction(x1,y1, x2,y2, minX+0.5f,minY+0.5f);
+ 	float bc1_start = edgeFunction(x2,y2, x0,y0, minX+0.5f,minY+0.5f);
+@@ -622,6 +774,214 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
+ 		texturing = false;
+ 	}
+ 
++#ifdef CC_BUILD_Q2
++#define Q2_SPAN_MAX 16
++	/* The Q2's CPU fills every pixel itself, which is most of a frame's time, so this loop does
++	 * less per pixel than the one below while drawing the same pixels:
++	 * - each row runs only across the triangle, not its whole bounding box: the bounds come from
++	 *   the edge functions, widened a pixel so the exact test below still decides every pixel;
++	 * - depth is z/w, which is linear across the screen, stepped per pixel with no divide, and
++	 *   tested first: the divide for 1/w (perspective-correct texture coordinates) is only done
++	 *   for a pixel that passes, where blocks hide much of what's behind them. z/w orders pixels
++	 *   as the per-pixel value below does, and nothing else reads the depth buffer;
++	 * - the edge functions, z/w, 1/w and u/w, v/w are all linear across the screen, so each is
++	 *   stepped by an add per pixel, not made again from the three corners' values;
++	 * - the texture coordinates are exact (the divide) only every q2_texSpan pixels along a row,
++	 *   at the first pixel drawn in each stretch and at its end, and stepped linearly between (as
++	 *   Quake's renderer did): a stretch with nothing drawn costs no divide at all. Texel edges
++	 *   move a pixel here and there. q2-texspan in options.txt: 0 is exact, every pixel. */
++	if (!area) return;
++	if (gfx_depthWrite && q2_tilesX) {
++		/* the tiles this may draw in: their farthest depth is worked out again when next asked */
++		int ty, tx0 = minX >> Q2_TILE_SHIFT, tx1 = maxX >> Q2_TILE_SHIFT;
++		for (ty = minY >> Q2_TILE_SHIFT; ty <= (maxY >> Q2_TILE_SHIFT); ty++)
++		{
++			/* with two threads, only the tiles in this thread's bands: it draws nothing in the
++			 * others', and each thread's tiles are then its own while they draw */
++			if (phase >= 0 && q2_bandShift >= Q2_TILE_SHIFT &&
++				(((ty << Q2_TILE_SHIFT) >> q2_bandShift) & 1) != phase) continue;
++			Mem_Set(&q2_tileDirty[ty * q2_tilesX + tx0], 1, tx1 - tx0 + 1);
++		}
++	}
++	{
++		float s    = area > 0 ? 1.0f : -1.0f; /* inside: every edge function's sign is the area's */
++		/* a value linear across the screen: at (minX, minY) and its steps in x and y */
++#define Q2_LINEAR(a, b, c, at, sx, sy) \
++		float at = (bc0_start * (a) + bc1_start * (b) + bc2_start * (c)) * factor; \
++		float sx = (dx12 * (a) + dx20 * (b) + dx01 * (c)) * factor; \
++		float sy = (dy12 * (a) + dy20 * (b) + dy01 * (c)) * factor;
++		Q2_LINEAR(z0, z1, z2, zRow, dzdx, dzdy)   /* z/w */
++		Q2_LINEAR(w0, w1, w2, wRow, dwdx, dwdy)   /* 1/w */
++		Q2_LINEAR(u0, u1, u2, uRow, dudx, dudy)   /* u/w */
++		Q2_LINEAR(v0, v1, v2, vRow, dvdx, dvdy)   /* v/w */
++#undef Q2_LINEAR
++		float e[3], d[3];
++		/* the state, in locals: the build's -fno-strict-aliasing makes the compiler read a global
++		 * again after every store to a buffer, which is every pixel */
++		const cc_bool depthTest = gfx_depthTest, depthWrite = gfx_depthWrite;
++		const cc_bool alphaTest = gfx_alphaTest, alphaBlend = gfx_alphaBlend, colorWrite = colWrite;
++		const int span = q2_texSpan;
++		/* 1/n for a stretch's length n, 1 to Q2_SPAN_MAX */
++		static float invLen[Q2_SPAN_MAX + 1];
++		if (!invLen[1]) { int k; for (k = 1; k <= Q2_SPAN_MAX; k++) invLen[k] = 1.0f / k; }
++		const int texW = curTexWidth, texWMask = texWidthMask, texHMask = texHeightMask;
++		/* the texture's row held within the corners' rows: inside a triangle it always is, but at
++		 * its edges (rounding, the edge allowance) it ran a little past, and a block's tile in the
++		 * atlas ends where the next, below it, begins: at a water face's edge, seen low, a row of
++		 * pixels took the next tile's empty texels and the water there was drawn clear (a line of
++		 * the dirt under it showed through). Rows only: the atlas is one tile wide, so a column
++		 * past the edge wraps within the same tile. Held before the wrap, so faces repeating a
++		 * texture (the map's border) still repeat. (A corner's v is stored over w here.) */
++		const float cv0 = V0->v / V0->w, cv1 = V1->v / V1->w, cv2 = V2->v / V2->w;
++		const int rowLo = (int)(min(cv0, min(cv1, cv2)) * curTexHeight);
++		const int rowHi = (int)(max(cv0, max(cv1, cv2)) * curTexHeight - 0.01f);
++		BitmapCol* const texels = curTexPixels;
++		BitmapCol* const cBuf   = colorBuffer;
++#if Q2_DEPTH16
++		cc_uint16* const dBuf   = (cc_uint16*)depthBuffer;
++		/* z/w stepped as an integer, in 65280ths shifted up 15 (Q2_ZSCALE): the depth to store is
++		 * then one shift away. Past the far plane z/w reaches only about 1.002, so 65280ths keep
++		 * that in 16 bits too, in order. A step too large to hold is only in a triangle less than
++		 * a pixel wide, whose rows have one pixel each: the step is never taken there */
++		const float dzs = dzdx * Q2_ZSCALE;
++		const int dzf = dzs > 2147483000.0f ? 2147483000 : dzs < -2147483000.0f ? -2147483000 : (int)dzs;
++#else
++		float* const     dBuf   = depthBuffer;
++#endif
++		d[0] = s * dx12; d[1] = s * dx20; d[2] = s * dx01;
++		/* where each edge crosses a row: e / d, a multiply by 1 / d worked out once here */
++		float invD[3];
++		invD[0] = d[0] ? 1.0f / d[0] : 0; invD[1] = d[1] ? 1.0f / d[1] : 0; invD[2] = d[2] ? 1.0f / d[2] : 0;
++		/* A pixel within a hundredth of a pixel of an edge counts as inside: two triangles sharing
++		 * an edge each work it out with their own rounding, and a pixel right on it could
++		 * otherwise be left by both (a crack); this way both draw it */
++		float tol[3];
++		tol[0] = 0.01f * (Math_AbsF(dx12) + Math_AbsF(dy12));
++		tol[1] = 0.01f * (Math_AbsF(dx20) + Math_AbsF(dy20));
++		tol[2] = 0.01f * (Math_AbsF(dx01) + Math_AbsF(dy01));
++
++		/* rows: all, or for two threads only this thread's 16-row bands (phase 0 or 1): bands, not
++		 * alternate rows, so the two cores write apart in memory and seldom share a cache line;
++		 * every other band, so sky above and ground below share out evenly */
++		const float sz = dzdy, sw = dwdy, su = dudy, sv = dvdy;
++		/* the edge functions at each row's start, from the first row's: worked out per row, not
++		 * stepped, so rounding doesn't build up down a tall triangle */
++		const float bc0_top = bc0_start, bc1_top = bc1_start, bc2_top = bc2_start;
++		const int yTop = minY;
++
++		for (y = minY; y <= maxY; y++, zRow += sz, wRow += sw, uRow += su, vRow += sv)
++		{
++			int xs = minX, xe = maxX, k, empty = 0;
++			float rows;
++			if (phase >= 0 && ((y >> q2_bandShift) & 1) != phase) {
++				/* the other thread's band: on to the start of the next (the loop adds the last row) */
++				int skip = (((y >> q2_bandShift) + 1) << q2_bandShift) - y - 1;
++				y += skip;
++				zRow += sz * skip; wRow += sw * skip; uRow += su * skip; vRow += sv * skip;
++				continue;
++			}
++			rows = (float)(y - yTop);
++			e[0] = s * (bc0_top + dy12 * rows) + tol[0];
++			e[1] = s * (bc1_top + dy20 * rows) + tol[1];
++			e[2] = s * (bc2_top + dy01 * rows) + tol[2];
++
++			for (k = 0; k < 3; k++) {
++				/* to a thousandth of a pixel past the crossing, not a pixel: a face seen edge on
++				 * is many short rows, and a pixel each side was much of each (the test below still
++				 * decides each pixel; the edges already lean out a hundredth of a pixel, tol) */
++				if (d[k] > 0) {        /* inside from x on, where e + d * (x - minX) >= 0 */
++					float t = -e[k] * invD[k] - 0.001f;
++					if (t > 0) xs = max(xs, minX + (int)t + ((float)(int)t < t));
++				} else if (d[k] < 0) { /* inside up to x */
++					float t = -e[k] * invD[k] + 0.001f;
++					if (t < 0) { empty = 1; break; }
++					if (t < maxX - minX) xe = min(xe, minX + (int)t);
++				} else if (e[k] < 0) { empty = 1; break; }
++			}
++			if (empty || xs > xe) continue;
++
++			int n = xs - minX;
++			/* the edge functions with the area's sign: a pixel is in where all three are >= 0 */
++			float e0 = e[0] + d[0] * n, e1 = e[1] + d[1] * n, e2 = e[2] + d[2] * n;
++			float z  = zRow + dzdx * n, iw = wRow + dwdx * n;
++#if Q2_DEPTH16
++			int zf = (int)(Math_Clamp_(z, -0.5f, 1.0035f) * Q2_ZSCALE);
++#endif
++			float uw = uRow + dudx * n, vw = vRow + dvdx * n;
++			int db_index = y * db_stride + xs;
++			int cb_index = y * cb_stride + xs;
++			int spanEnd = xs; /* the pixel past the stretch whose u and v below are stepped */
++			float u = 0, v = 0, du = 0, dv = 0;
++
++#if Q2_DEPTH16
++#define Q2_ZSTEP zf += dzf
++#else
++#define Q2_ZSTEP z += dzdx
++#endif
++			for (x = xs; x <= xe; x++, e0 += d[0], e1 += d[1], e2 += d[2], Q2_ZSTEP, iw += dwdx,
++				 uw += dudx, vw += dvdx, db_index++, cb_index++, u += du, v += dv)
++			{
++				if (e0 < 0 || e1 < 0 || e2 < 0) continue;
++#if Q2_DEPTH16
++				/* below 0 (before the near plane) the unsigned shift is past any depth stored */
++				cc_uint32 zq = (cc_uint32)zf >> 15;
++				if (depthTest && zq > dBuf[db_index]) continue;
++#define Q2_DEPTH zq
++#else
++#define Q2_DEPTH z
++				if (depthTest && (z < 0 || z > dBuf[db_index])) continue;
++#endif
++				if (!colorWrite) {
++					if (depthWrite) dBuf[db_index] = Q2_DEPTH;
++					continue;
++				}
++
++				if (texturing) {
++					if (!span) {
++						float w = 1 / iw;
++						u = uw * w;
++						v = vw * w;
++					} else if (x >= spanEnd) {
++						/* a new stretch from here: exact here and at its end, in between stepped */
++						int len = min(span, xe + 1 - x);
++						float w  = 1 / iw;
++						float we = 1 / (iw + dwdx * len);
++						u  = uw * w;
++						v  = vw * w;
++						du = ((uw + dudx * len) * we - u) * invLen[len];
++						dv = ((vw + dvdx * len) * we - v) * invLen[len];
++						spanEnd = x + len;
++					}
++					int row  = (int)v;
++					int texX = ((int)u) & texWMask;
++					int texY;
++					row  = row < rowLo ? rowLo : row > rowHi ? rowHi : row;
++					texY = row & texHMask;
++					BitmapCol tColor = texels[texY * texW + texX];
++					MultiplyColors(color, tColor);
++				}
++
++				if (alphaTest && A < 0x80) continue;
++				if (depthWrite) dBuf[db_index] = Q2_DEPTH;
++
++				if (!alphaBlend) {
++					cBuf[cb_index] = BitmapCol_Make(R, G, B, 0xFF);
++					continue;
++				}
++				BitmapCol dst = cBuf[cb_index];
++				int dstR = BitmapCol_R(dst);
++				int dstG = BitmapCol_G(dst);
++				int dstB = BitmapCol_B(dst);
++				int finR = dstR + ((A * (R - dstR)) >> 8);
++				int finG = dstG + ((A * (G - dstG)) >> 8);
++				int finB = dstB + ((A * (B - dstB)) >> 8);
++				cBuf[cb_index] = BitmapCol_Make(finR, finG, finB, 0xFF);
++			}
++#undef Q2_DEPTH
++		}
++		return;
++	}
++#endif
+ 	for (y = minY; y <= maxY; y++, bc0_start += dy12, bc1_start += dy20, bc2_start += dy01) 
+ 	{
+ 		float bc0 = bc0_start;
+@@ -702,7 +1062,7 @@ static void ClipLine(Vertex* v1, Vertex* v2, Vertex* V) {
+ }
+ 
+ // https://casual-effects.com/research/McGuire2011Clipping/clip.glsl
+-static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3) {
++static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3, int phase) {
+ 	Vertex tmp[2];
+ 	Vertex* a = &tmp[0];
+ 	Vertex* b = &tmp[1];
+@@ -723,7 +1083,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v0, a, b);
++		DrawTriangle3D(v0, a, b, phase);
+ 	}
+     break;
+ 	case V1_VIS:
+@@ -741,7 +1101,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(a, b, v1);
++		DrawTriangle3D(a, b, v1, phase);
+ 	} break;
+ 	case V2_VIS:
+ 	{
+@@ -758,7 +1118,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(a, b, v2);
++		DrawTriangle3D(a, b, v2, phase);
+ 	} break;
+ 	case V3_VIS:
+ 	{
+@@ -775,7 +1135,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 		
+-		DrawTriangle3D(b, v3, a);
++		DrawTriangle3D(b, v3, a, phase);
+ 	}
+ 	break;
+ 	case V0_VIS | V1_VIS:
+@@ -793,8 +1153,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v1, v0,  a);
+-		DrawTriangle3D(a,  v0,  b);
++		DrawTriangle3D(v1, v0,  a, phase);
++		DrawTriangle3D(a,  v0,  b, phase);
+ 	} break;
+ 	// case V0_VIS | V2_VIS: degenerate case that should never happen
+ 	case V0_VIS | V3_VIS:
+@@ -812,8 +1172,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(a, v0,  b);
+-		DrawTriangle3D(b, v0, v3);
++		DrawTriangle3D(a, v0,  b, phase);
++		DrawTriangle3D(b, v0, v3, phase);
+ 	} break;
+ 	case V1_VIS | V2_VIS:
+ 	{
+@@ -830,8 +1190,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v1,  b, v2);
+-		DrawTriangle3D(v2,  b,  a);
++		DrawTriangle3D(v1,  b, v2, phase);
++		DrawTriangle3D(v2,  b,  a, phase);
+ 	} break;
+ 	// case V1_VIS | V3_VIS: degenerate case that should never happen
+ 	case V2_VIS | V3_VIS:
+@@ -849,8 +1209,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D( b,  a, v2);
+-		DrawTriangle3D(v2,  a, v3);
++		DrawTriangle3D( b,  a, v2, phase);
++		DrawTriangle3D(v2,  a, v3, phase);
+ 	} break;
+ 	case V0_VIS | V1_VIS | V2_VIS:
+ 	{
+@@ -870,9 +1230,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v1, v0, v2);
+-		DrawTriangle3D(v2, v0,  a);
+-		DrawTriangle3D(v0,  b,  a);
++		DrawTriangle3D(v1, v0, v2, phase);
++		DrawTriangle3D(v2, v0,  a, phase);
++		DrawTriangle3D(v0,  b,  a, phase);
+ 	} break;
+ 	case V0_VIS | V1_VIS | V3_VIS:
+ 	{
+@@ -892,9 +1252,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v0, v3, v1);
+-		DrawTriangle3D(v1, v3,  a);
+-		DrawTriangle3D(v3,  b,  a);
++		DrawTriangle3D(v0, v3, v1, phase);
++		DrawTriangle3D(v1, v3,  a, phase);
++		DrawTriangle3D(v3,  b,  a, phase);
+ 	} break;
+ 	case V0_VIS | V2_VIS | V3_VIS:
+ 	{
+@@ -914,9 +1274,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v3, v2, v0);
+-		DrawTriangle3D(v0, v2,  a);
+-		DrawTriangle3D(v2,  b,  a);
++		DrawTriangle3D(v3, v2, v0, phase);
++		DrawTriangle3D(v0, v2,  a, phase);
++		DrawTriangle3D(v2,  b,  a, phase);
+ 	} break;
+ 	case V1_VIS | V2_VIS | V3_VIS:
+ 	{
+@@ -936,17 +1296,339 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+ 		ViewportVertex3D(a);
+ 		ViewportVertex3D(b);
+ 
+-		DrawTriangle3D(v2, v1, v3);
+-		DrawTriangle3D(v3, v1,  a);
+-		DrawTriangle3D(v1,  b,  a);
++		DrawTriangle3D(v2, v1, v3, phase);
++		DrawTriangle3D(v3, v1,  a, phase);
++		DrawTriangle3D(v1,  b,  a, phase);
+ 	} break;
+ 	}
+ }
+ 
++/* The 3D quads startVertex on, filling the rows phase gives (see DrawTriangle3D) */
++#ifdef CC_BUILD_Q2
++static float Q2_TileFar(int tx, int ty) {
++	int i = ty * q2_tilesX + tx, x, y;
++	if (q2_tileDirty[i]) {
++		int x0 = tx << Q2_TILE_SHIFT, x1 = min(x0 + (1 << Q2_TILE_SHIFT), fb_width);
++		int y0 = ty << Q2_TILE_SHIFT, y1 = min(y0 + (1 << Q2_TILE_SHIFT), fb_height);
++#if Q2_DEPTH16
++		int far = 0, d;
++		for (y = y0; y < y1; y++)
++		{
++			const cc_uint16* row = (const cc_uint16*)depthBuffer + y * db_stride;
++			for (x = x0; x < x1; x++) { d = row[x]; if (d > far) far = d; }
++		}
++		/* a pixel stored as d is nearer than (d + 1) / 65280; one never drawn, as far as can be */
++		q2_tileFar[i]   = far == 65535 ? Q2_FAR : (far + 1) / 65280.0f;
++#else
++		float far = 0, d;
++		for (y = y0; y < y1; y++)
++		{
++			const float* row = depthBuffer + y * db_stride;
++			for (x = x0; x < x1; x++) { d = row[x]; if (d > far) far = d; }
++		}
++		q2_tileFar[i]   = far;
++#endif
++		q2_tileDirty[i] = 0;
++	}
++	return q2_tileFar[i];
++}
++
++/* Whether the box (world coordinates) would draw nothing: all off the screen, or all behind what's
++ * drawn so far. Conservative: true only when nothing in it could show. Called between draws (the
++ * worker thread is idle then: DrawQuads3DAll waits for it). */
++cc_bool Gfx_Q2BoxHidden(float x0, float y0, float z0, float x1, float y1, float z1) {
++	float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f, near = 1e30f;
++	int i, tx, ty, tx0, tx1, ty0, ty1;
++	if (!Q2_Occlusion || !q2_tilesX) return false;
++
++	for (i = 0; i < 8; i++)
++	{
++		float x = (i & 1) ? x1 : x0, y = (i & 2) ? y1 : y0, z = (i & 4) ? z1 : z0;
++		float cx = x * _mvp.row1.x + y * _mvp.row2.x + z * _mvp.row3.x + _mvp.row4.x;
++		float cy = x * _mvp.row1.y + y * _mvp.row2.y + z * _mvp.row3.y + _mvp.row4.y;
++		float cz = x * _mvp.row1.z + y * _mvp.row2.z + z * _mvp.row3.z + _mvp.row4.z;
++		float cw = x * _mvp.row1.w + y * _mvp.row2.w + z * _mvp.row3.w + _mvp.row4.w;
++		float iw, sx, sy, d;
++		/* a corner behind the near plane: its faces are clipped, and the box can't be judged */
++		if (cz < 0 || cw <= 0) return false;
++
++		iw = 1.0f / cw;
++		sx = vp_hwidth  * (1 + cx * iw);
++		sy = vp_hheight * (1 - cy * iw);
++		d  = cz * iw; /* as DrawTriangle3D's depth: z/w */
++		if (sx < minX) minX = sx;
++		if (sx > maxX) maxX = sx;
++		if (sy < minY) minY = sy;
++		if (sy > maxY) maxY = sy;
++		if (d  < near) near = d;
++	}
++	/* wholly off the screen (the box is inside its corners' outline) */
++	if (maxX < -1 || maxY < -1 || minX > fb_maxX + 1 || minY > fb_maxY + 1) return true;
++
++	/* a pixel's margin around, and a little nearer, for rounding */
++	tx0 = max((int)minX - 1, 0)       >> Q2_TILE_SHIFT;
++	tx1 = min((int)maxX + 1, fb_maxX) >> Q2_TILE_SHIFT;
++	ty0 = max((int)minY - 1, 0)       >> Q2_TILE_SHIFT;
++	ty1 = min((int)maxY + 1, fb_maxY) >> Q2_TILE_SHIFT;
++	near -= 0.00001f;
++
++	for (ty = ty0; ty <= ty1; ty++)
++		for (tx = tx0; tx <= tx1; tx++)
++		{
++			if (Q2_TileFar(tx, ty) >= near) return false;
++		}
++	return true;
++}
++#endif
++
++#ifdef CC_BUILD_Q2
++/* Whether a quad, on the screen and in front of the eye (its corners' screen positions and z/w),
++ * would draw nothing for this thread (from 1.19): all behind what's drawn already, by the tiles
++ * occlusion culling keeps (Gfx_Q2BoxHidden tests whole chunks with them, before they're drawn), or
++ * in no row of this thread's (phase: its 16-row bands). Counted in the bench view, half the
++ * triangles drawn were in chunks with no pixel left in the frame: under and beside the eye, whose
++ * boxes reach behind it and can't be judged whole, and faces behind hills in chunks partly in view.
++ * A quad's own box is judged here, so such a face costs its corners and this test, not the setup of
++ * two triangles and a pass over every row of them. Both threads read the tiles while drawing: the
++ * depth buffer only gets nearer within a frame, so a tile's far depth read early is only farther
++ * (it hides less), never wrong. */
++#define Q2_QUAD_TILES q2_quadTiles
++static int q2_quadTiles = 12;
++static cc_bool Q2_QuadHidden(const Vertex* v, int phase) {
++	float minX = v[0].x, maxX = v[0].x, minY = v[0].y, maxY = v[0].y, near = v[0].z;
++	int k, tx, ty, tx0, tx1, ty0, ty1;
++	for (k = 1; k < 4; k++)
++	{
++		if (v[k].x < minX) minX = v[k].x;
++		if (v[k].x > maxX) maxX = v[k].x;
++		if (v[k].y < minY) minY = v[k].y;
++		if (v[k].y > maxY) maxY = v[k].y;
++		if (v[k].z < near) near = v[k].z;
++	}
++	/* as DrawTriangle3D's own test: the corners' whole pixels */
++	if (maxX < 0 || maxY < 0 || (int)minX > fb_maxX || (int)minY > fb_maxY) return true;
++
++	ty0 = max((int)minY, 0); ty1 = min((int)maxY, fb_maxY);
++	if (phase >= 0) {
++		/* no row of this thread's band between: nothing for it to draw (the bands are 16 rows,
++		 * so a quad of a few rows often has none) */
++		int b0 = ty0 >> q2_bandShift, b1 = ty1 >> q2_bandShift;
++		if (b0 == b1 && (b0 & 1) != phase) return true;
++	}
++	if (!q2_occlusionNow) return false;
++
++	tx0 = max((int)minX, 0) >> Q2_TILE_SHIFT;
++	tx1 = min((int)maxX, fb_maxX) >> Q2_TILE_SHIFT;
++	ty0 >>= Q2_TILE_SHIFT; ty1 >>= Q2_TILE_SHIFT;
++	/* a large quad (near the eye) is seldom all hidden, and its test (each tile's far depth
++	 * worked out again since something drew there) costs more than it saves: drawn untested */
++	if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > Q2_QUAD_TILES) return false;
++	near -= 0.00001f;
++
++	for (ty = ty0; ty <= ty1; ty++)
++	{
++		/* a tile row wholly in the other thread's bands isn't this thread's to judge */
++		if (phase >= 0 && q2_bandShift >= Q2_TILE_SHIFT &&
++			(((ty << Q2_TILE_SHIFT) >> q2_bandShift) & 1) != phase) continue;
++		for (tx = tx0; tx <= tx1; tx++)
++		{
++			if (Q2_TileFar(tx, ty) >= near) return false;
++		}
++	}
++	return true;
++}
++#endif
++
++static void DrawQuads3D(int startVertex, int verticesCount, int phase) {
++	Vertex vertices[4];
++	int i, j = startVertex;
++
++	// 4 vertices = 1 quad = 2 triangles
++	for (i = 0; i < verticesCount / 4; i++, j += 4)
++	{
++		int clip = TransformVertex3D(j + 0, &vertices[0]) << 0
++				|  TransformVertex3D(j + 1, &vertices[1]) << 1
++				|  TransformVertex3D(j + 2, &vertices[2]) << 2
++				|  TransformVertex3D(j + 3, &vertices[3]) << 3;
++
++		if (clip == 0) {
++			// Quad entirely clipped
++		} else if (clip == 0x0F) {
++			// Quad entirely visible
++			ViewportVertex3D(&vertices[0]);
++			ViewportVertex3D(&vertices[1]);
++			ViewportVertex3D(&vertices[2]);
++			ViewportVertex3D(&vertices[3]);
++#ifdef CC_BUILD_Q2
++			if (Q2_QuadHidden(vertices, phase)) continue;
++#endif
++
++			DrawTriangle3D(&vertices[0], &vertices[2], &vertices[1], phase);
++			DrawTriangle3D(&vertices[2], &vertices[0], &vertices[3], phase);
++		} else {
++			// Quad partially visible
++			DrawClipped(clip, &vertices[0], &vertices[1], &vertices[2], &vertices[3], phase);
++		}
++	}
++}
++
++#ifdef CC_BUILD_Q2
++/* The Q2's X2000 has two cores. Filling triangles is most of a frame, so a worker thread draws
++ * every batch of 3D quads with the main thread: each fills its own 16-row bands of the screen
++ * (DrawTriangle3D's phase), each transforming the corners itself. The main thread waits for the
++ * worker before it returns, so the renderer's state, the textures and the buffers never change
++ * while the two draw, and the order of draws is kept. q2-cores=1 (Second core off) keeps one.
++ *
++ * How the two meet, kept to plain hand-offs: the whole Q2 froze after minutes of both cores
++ * drawing (not with one, nor for heat or the battery: it froze charging), and Q2 Pod's author
++ * pointed at the timings between the cores. So, from 1.10:
++ * - the worker never reads the clock (it read it every 1024 looks while it waited);
++ * - a wait, on either side, looks at the other's counter a bounded number of times (a batch
++ *   comes every few tens of microseconds within a frame), then sleeps in the kernel (a futex)
++ *   until the other wakes it: between frames, in menus, the second core sleeps;
++ * - the bands keep the two cores' writes apart in memory (alternate rows put them in the same
++ *   cache lines all the time).
++ * The counters are sequentially consistent atomics: a side that goes to sleep says so first and
++ * then looks again, and a side that hands over looks for a sleeper after it, so a wake-up can't
++ * be missed (one of the two always sees the other). */
++#include <pthread.h>
++#include <unistd.h>
++#include "Options.h"
++#ifdef __mips__
++#define Q2_NR_FUTEX 4238 /* o32 */
++#else
++#include <sys/syscall.h>
++#define Q2_NR_FUTEX SYS_futex
++#endif
++long syscall(long number, ...);
++#define Q2_FUTEX_WAIT 128 /* FUTEX_WAIT | FUTEX_PRIVATE_FLAG */
++#define Q2_FUTEX_WAKE 129 /* FUTEX_WAKE | FUTEX_PRIVATE_FLAG */
++#define Q2_LOOK_US    1000 /* how long a side looks at the other's counter before sleeping */
++
++static struct { int start, count; } q2_job;
++static int q2_seq, q2_done;              /* the job's number, the last the worker finished */
++static int q2_workerAsleep, q2_mainAsleep;
++/* for the log's speed note (Q2_TwoCoreStats): hand-offs, each side's sleeps, the main thread's
++ * waits for the worker in microseconds (the main thread reads the clock; the worker doesn't) */
++static volatile int q2_handoffs, q2_workerSleeps, q2_mainSleeps;
++static volatile cc_uint64 q2_mainWaitUs;
++static int q2_threads;      /* 0: not decided; 1: one thread; 2: the worker runs */
++static int q2_looks;        /* looks in about Q2_LOOK_US: timed once by the main thread, at the start */
++static int q2_workerUp;     /* the worker thread was started (it stays, asleep, with one thread) */
++
++#define Q2_LOAD(v)     __atomic_load_n(&(v), __ATOMIC_SEQ_CST)
++#define Q2_STORE(v, x) __atomic_store_n(&(v), (x), __ATOMIC_SEQ_CST)
++
++/* Sleeps while *addr is still value (returns at once if it isn't) */
++static void Q2_Sleep(int* addr, int value) { syscall(Q2_NR_FUTEX, addr, Q2_FUTEX_WAIT, value, NULL, NULL, 0); }
++static void Q2_Wake(int* addr)             { syscall(Q2_NR_FUTEX, addr, Q2_FUTEX_WAKE, 1, NULL, NULL, 0); }
++
++static void* Q2_Worker(void* arg) {
++	int seen = 0, seq = 0, i;
++	for (;;) {
++		for (i = 0; i < q2_looks; i++) {
++			seq = Q2_LOAD(q2_seq);
++			if (seq != seen) break;
++		}
++		if (seq == seen) {
++			Q2_STORE(q2_workerAsleep, 1);
++			if (Q2_LOAD(q2_seq) == seen) { q2_workerSleeps++; Q2_Sleep(&q2_seq, seen); }
++			Q2_STORE(q2_workerAsleep, 0);
++			continue;
++		}
++		seen = seq;
++		DrawQuads3D(q2_job.start, q2_job.count, 1);
++		Q2_STORE(q2_done, seq);
++		if (Q2_LOAD(q2_mainAsleep)) Q2_Wake(&q2_done);
++	}
++	return NULL;
++}
++
++/* One or both cores draw the world (q2-cores; Graphics options' Second core): changed between draws */
++/* How many looks at a counter take Q2_LOOK_US, timed here on the main thread (the worker reads no
++ * clock): the bound for both sides' looks before they sleep */
++static void Q2_TimeLooks(void) {
++	int i, n = 100000, us, look_us = Q2_LOOK_US;
++	cc_uint64 beg = Stopwatch_Measure();
++	for (i = 0; i < n; i++) (void)Q2_LOAD(q2_done);
++	us = (int)Stopwatch_ElapsedMicroseconds(beg, Stopwatch_Measure());
++	if (us < 1) us = 1;
++	q2_looks = (int)((cc_uint64)n * Q2_LOOK_US / us);
++	q2_looks = max(10000, min(q2_looks, 5000000));
++	Platform_Log2("Two cores: %i looks at the other's counter (about %i us), then sleep", &q2_looks, &look_us);
++}
++
++void Q2_SetCores(int n) {
++	if (n == 2 && !q2_workerUp) {
++		pthread_t t;
++		Q2_TimeLooks();
++		if (pthread_create(&t, NULL, Q2_Worker, NULL)) n = 1;
++		else q2_workerUp = 1;
++	}
++	q2_threads = n;
++	Platform_Log1("Drawing on %i threads", &q2_threads);
++}
++/* The counts since the last call (for Platform_Q2.c's speed note) */
++void Q2_TwoCoreStats(int* handoffs, int* workerSleeps, int* mainSleeps, int* mainWaitMs) {
++	*handoffs = q2_handoffs; *workerSleeps = q2_workerSleeps; *mainSleeps = q2_mainSleeps;
++	*mainWaitMs = (int)(q2_mainWaitUs / 1000);
++	q2_handoffs = q2_workerSleeps = q2_mainSleeps = 0; q2_mainWaitUs = 0;
++}
++int Q2_GetCores(void) { return q2_threads ? q2_threads : Options_GetInt("q2-cores", 1, 2, 2); }
++
++static void DrawQuads3DAll(int startVertex, int verticesCount) {
++	int seq, done, i;
++	if (!q2_threads) {
++		q2_texSpan = Options_GetInt("q2-texspan", 0, Q2_SPAN_MAX, 0);
++		{
++			int rows = Options_GetInt("q2-bandrows", 1, 16, 16);
++			for (q2_bandShift = 0; (2 << q2_bandShift) <= rows && q2_bandShift < 4; q2_bandShift++) { }
++			rows = 1 << q2_bandShift;
++			Platform_Log1("Two cores: bands of %i rows each", &rows);
++		}
++		Platform_Log1("Texture coordinates exact every %i pixels (0: every pixel)", &q2_texSpan);
++		q2_quadTiles = Options_GetInt("q2-quadtiles", 0, 4096, 12);
++		Q2_SetCores(Options_GetInt("q2-cores", 1, 2, 2));
++	}
++	q2_occlusionNow = Q2_Occlusion && q2_tilesX && gfx_depthTest;
++	if (q2_threads == 1) { DrawQuads3D(startVertex, verticesCount, -1); return; }
++
++	q2_job.start = startVertex;
++	q2_job.count = verticesCount;
++	seq = q2_seq + 1;
++	Q2_STORE(q2_seq, seq);
++	if (Q2_LOAD(q2_workerAsleep)) Q2_Wake(&q2_seq);
++	DrawQuads3D(startVertex, verticesCount, 0);
++
++	Q2_Phase = "waiting for the second core's rows";
++	q2_handoffs++;
++	if (Q2_LOAD(q2_done) != seq) {
++		cc_uint64 beg = Stopwatch_Measure();
++		for (i = 0; ; i++) {
++			done = Q2_LOAD(q2_done);
++			if (done == seq) break;
++			if (i < q2_looks) continue;
++			Q2_STORE(q2_mainAsleep, 1);
++			if (Q2_LOAD(q2_done) == done) { q2_mainSleeps++; Q2_Sleep(&q2_done, done); }
++			Q2_STORE(q2_mainAsleep, 0);
++		}
++		q2_mainWaitUs += Stopwatch_ElapsedMicroseconds(beg, Stopwatch_Measure());
++	}
++	Q2_Phase = "drawing";
++}
++#else
++static void DrawQuads3DAll(int startVertex, int verticesCount) {
++	DrawQuads3D(startVertex, verticesCount, -1);
++}
++#endif
++
+ void DrawQuads(int startVertex, int verticesCount, DrawHints hints) {
+ 	Vertex vertices[4];
+ 	int i, j = startVertex;
+ 
++#ifdef CC_BUILD_Q2
++	if (gfx_rendering2D) Q2_Begin2D();
++#endif
+ 	if (gfx_rendering2D && (hints & (DRAW_HINT_SPRITE|DRAW_HINT_RECT))) {
+ 		// 4 vertices = 1 quad = 2 triangles
+ 		for (i = 0; i < verticesCount / 4; i++, j += 4)
+@@ -970,30 +1652,7 @@ void DrawQuads(int startVertex, int verticesCount, DrawHints hints) {
+ 			DrawTriangle2D(&vertices[2], &vertices[0], &vertices[3]);
+ 		}
+ 	} else {
+-		// 4 vertices = 1 quad = 2 triangles
+-		for (i = 0; i < verticesCount / 4; i++, j += 4)
+-		{
+-			int clip = TransformVertex3D(j + 0, &vertices[0]) << 0
+-					|  TransformVertex3D(j + 1, &vertices[1]) << 1
+-					|  TransformVertex3D(j + 2, &vertices[2]) << 2
+-					|  TransformVertex3D(j + 3, &vertices[3]) << 3;
+-
+-			if (clip == 0) {
+-				// Quad entirely clipped
+-			} else if (clip == 0x0F) {
+-				// Quad entirely visible
+-				ViewportVertex3D(&vertices[0]);
+-				ViewportVertex3D(&vertices[1]);
+-				ViewportVertex3D(&vertices[2]);
+-				ViewportVertex3D(&vertices[3]);
+-
+-				DrawTriangle3D(&vertices[0], &vertices[2], &vertices[1]);
+-				DrawTriangle3D(&vertices[2], &vertices[0], &vertices[3]);
+-			} else {
+-				// Quad partially visible
+-				DrawClipped(clip, &vertices[0], &vertices[1], &vertices[2], &vertices[3]);
+-			}
+-		}
++		DrawQuads3DAll(startVertex, verticesCount);
+ 	}
+ }
+ 
+@@ -1023,6 +1682,9 @@ static BitmapCol* CB_GetRow(struct Bitmap* bmp, int y, void* ctx) {
+ 
+ cc_result Gfx_TakeScreenshot(struct Stream* output) {
+ 	struct Bitmap bmp;
++#ifdef CC_BUILD_Q2
++	Q2_Begin2D(); /* the view's picture */
++#endif
+ 	Bitmap_Init(bmp, fb_width, fb_height, NULL);
+ 	return Png_Encode(&bmp, output, CB_GetRow, false, NULL);
+ }
+@@ -1034,6 +1696,9 @@ void Gfx_BeginFrame(void) { }
+ 
+ void Gfx_EndFrame(void) {
+     Rect2D r;
++#ifdef CC_BUILD_Q2
++	Q2_Begin2D(); /* the world stretched over the view, if nothing in 2D did that */
++#endif
+ 	r.x = 0;
+ 	r.y = 0; 
+ 	r.width  = fb_width;
+@@ -1049,6 +1714,15 @@ void Gfx_SetVSync(cc_bool vsync) {
+ void Gfx_OnWindowResize(int width, int height) {
+ 	if (depthBuffer) DestroyBuffers();
+ 
++#ifdef CC_BUILD_Q2
++	Window_AllocFramebuffer(&fb_bmp, width, height);
++	q2_full  = fb_bmp.scan0;
++	q2_fullW = width; q2_fullH = height;
++	depthBuffer = Mem_Alloc(width * height, 4, "depth buffer");
++	Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
++	Q2_SetRenderScale(Options_GetInt("q2-renderscale", 25, 100, 100));
++	Platform_Log1("Render scale: %i percent", &q2_scalePct);
++#else
+ 	fb_width   = width;
+ 	fb_height  = height;
+ 
+@@ -1061,8 +1735,14 @@ void Gfx_OnWindowResize(int width, int height) {
+ 
+ 	Gfx_SetViewport(0, 0, width, height);
+ 	Gfx_SetScissor (0, 0, width, height);
++#endif
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* the whole of whichever picture is being drawn (Q2_UseTarget): the game only ever asks for that */
++void Gfx_SetViewport(int x, int y, int w, int h) { }
++void Gfx_SetScissor (int x, int y, int w, int h) { }
++#else
+ void Gfx_SetViewport(int x, int y, int w, int h) {
+ 	vp_hwidth  = w / 2.0f;
+ 	vp_hheight = h / 2.0f;
+@@ -1073,6 +1753,7 @@ void Gfx_SetScissor (int x, int y, int w, int h) {
+ 	fb_maxX = x + w - 1;
+ 	fb_maxY = y + h - 1;
+ }
++#endif
+ 
+ void Gfx_GetApiInfo(cc_string* info) {
+ 	int pointerSize = sizeof(void*) * 8;
+diff --git a/src/Gui.c b/src/Gui.c
+index a147cc8..8e31b97 100644
+--- a/src/Gui.c
++++ b/src/Gui.c
+@@ -125,15 +125,31 @@ static void LoadOptions(void) {
+ 	Gui.ClassicInventory = Options_GetBool(OPT_CLASSIC_INVENTORY, false) || Game_ClassicMode;
+ 	Gui.ShowFPS          = Options_GetBool(OPT_SHOW_FPS, true);
+ 	
++#ifdef CC_BUILD_Q2
++	/* the Q2's small screen: an inventory big enough to tap */
++	Gui.RawInventoryScale = Options_GetFloat(OPT_INVENTORY_SCALE, 0.25f, 5.0f, 2.5f);
++#else
+ 	Gui.RawInventoryScale = Options_GetFloat(OPT_INVENTORY_SCALE, 0.25f, 5.0f, 1.0f);
+-#if defined CC_BUILD_SYMBIAN_3 || defined CC_BUILD_SYMBIAN_S60V5
++#endif
++#if defined CC_BUILD_Q2
++	Gui.RawHotbarScale    = Options_GetFloat(OPT_HOTBAR_SCALE,    0.25f, 5.0f, 2.6f);
++#elif defined CC_BUILD_SYMBIAN_3 || defined CC_BUILD_SYMBIAN_S60V5
+ 	Gui.RawHotbarScale    = Options_GetFloat(OPT_HOTBAR_SCALE,    0.25f, 5.0f, 2.0f);
+ #else
+ 	Gui.RawHotbarScale    = Options_GetFloat(OPT_HOTBAR_SCALE,    0.25f, 5.0f, 1.0f);
+ #endif
+ 	Gui.RawChatScale      = Options_GetFloat(OPT_CHAT_SCALE,      0.25f, 5.0f, 1.0f);
++#ifdef CC_BUILD_Q2
++	Gui.RawCrosshairScale = Options_GetFloat(OPT_CROSSHAIR_SCALE, 0.25f, 5.0f, 1.5f);
++#else
+ 	Gui.RawCrosshairScale = Options_GetFloat(OPT_CROSSHAIR_SCALE, 0.25f, 5.0f, 1.0f);
++#endif
++#ifdef CC_BUILD_Q2
++	/* the thumbstick a tenth bigger than ClassiCube's, for a thumb on the Q2's small screen */
++	Gui.RawTouchScale     = Options_GetFloat(OPT_TOUCH_SCALE,     0.25f, 5.0f, 1.1f);
++#else
+ 	Gui.RawTouchScale     = Options_GetFloat(OPT_TOUCH_SCALE,     0.25f, 5.0f, 1.0f);
++#endif
+ 
+ 	Gui.AutoScaleChat     = Options_GetBool(OPT_CHAT_AUTO_SCALE, true);
+ }
+@@ -478,6 +494,32 @@ void Widget_CalcPosition(void* widget) {
+ 	
+ 	w->x = Gui_CalcPos(w->horAnchor, w->xOffset, w->width , windowWidth );
+ 	w->y = Gui_CalcPos(w->verAnchor, w->yOffset, w->height, windowHeight);
++#ifdef CC_BUILD_Q2
++	/* The Q2's glass has corners rounded with an 80 px radius: a widget anchored in a corner is */
++	/* moved in until its outer corner is on the glass. Sideways at the top, where buttons stack */
++	/* down the side (Fly over Speed) and moving one down would cover the next. At the bottom, */
++	/* straight up for a wide one (the pause menu's Quit game, beside Back to game), along the */
++	/* diagonal for the rest (the stick, flying's up and down). */
++	if ((w->horAnchor == ANCHOR_MIN || w->horAnchor == ANCHOR_MAX) &&
++		(w->verAnchor == ANCHOR_MIN || w->verAnchor == ANCHOR_MAX)) {
++		const int r = 80;
++		cc_bool wide = w->width > 2 * w->height;
++		int sx = w->horAnchor == ANCHOR_MIN ? 1 : -1;
++		int sy = w->verAnchor == ANCHOR_MIN ? 0 : -1;
++		int d, x, y, dx, dy;
++		if (sy && wide) sx = 0;
++		for (d = 0; d < r; d++) {
++			/* the widget's outer corner, measured from the centre of the glass's curve */
++			x  = w->x + sx * d;
++			y  = w->y + sy * d;
++			dx = w->horAnchor == ANCHOR_MIN ? r - x : (x + w->width)  - (windowWidth  - r);
++			dy = w->verAnchor == ANCHOR_MIN ? r - y : (y + w->height) - (windowHeight - r);
++			if (dx <= 0 || dy <= 0 || dx * dx + dy * dy <= r * r) break;
++		}
++		w->x += sx * d;
++		w->y += sy * d;
++	}
++#endif
+ }
+ 
+ void Widget_Reset(void* widget) {
+diff --git a/src/MapRenderer.c b/src/MapRenderer.c
+index fbe36dd..56cbe99 100644
+--- a/src/MapRenderer.c
++++ b/src/MapRenderer.c
+@@ -135,6 +135,18 @@ if (drawMin && drawMax) { \
+ 	Game_Vertices += part.counts[maxFace]; \
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* Occlusion culling (Graphics_SoftGPU.c): a chunk is skipped when the chunks drawn before it, nearer,
++ * already cover it. Only the opaque parts: water's are drawn afterwards, over everything */
++cc_bool Gfx_Q2BoxHidden(float x0, float y0, float z0, float x1, float y1, float z1);
++static cc_bool Q2_ChunkHidden(struct ChunkInfo* c) {
++	/* the box around its faces (Builder.c Q2_ChunkBounds), not the whole chunk's */
++	float x = c->centreX - 8, y = c->centreY - 8, z = c->centreZ - 8;
++	return Gfx_Q2BoxHidden(x + c->q2MinX, y + c->q2MinY, z + c->q2MinZ,
++						   x + c->q2MaxX, y + c->q2MaxY, z + c->q2MaxZ);
++}
++#endif
++
+ static void RenderNormalBatch(int batch) {
+ 	int batchOffset = chunksCount * batch;
+ 	struct ChunkInfo* info;
+@@ -149,6 +161,9 @@ static void RenderNormalBatch(int batch) {
+ 		part = info->normalParts[batchOffset];
+ 		if (part.offset < 0) continue;
+ 		hasNormParts[batch] = true;
++#ifdef CC_BUILD_Q2
++		if (Q2_ChunkHidden(info)) continue;
++#endif
+ 
+ #if CC_GFX_BACKEND != CC_GFX_BACKEND_GL11
+ 		Gfx_BindVb_Textured(info->vb);
+@@ -556,6 +571,46 @@ static void CalcViewDists(void) {
+ 	renderDistSquared = AdjustDist(Game_ViewDistance);
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* Seen chunk by chunk, past the far plane (at the view distance) a sea-level chunk could be drawn
++ * while the one under it wasn't, and through the water the eye went down to the bedrock under the
++ * map (dark squares in the sea, coming and going). So, on the Q2:
++ * - a chunk is in range by its distance across the map only (Q2_FlatDist), so a column is in
++ *   range whole or not at all; the sort, nearest first, still counts the height (occlusion culling
++ *   wants the chunks in front drawn first);
++ * - a chunk is in view when its box is, a chunk under the sea's level with its box stretched up to
++ *   that level: the floor under the water is drawn whenever the water over it is in view (the
++ *   chunks above the sea are tested as themselves, which draws less than up to the sky did).
++ * EnvRenderer's stand-in sea covers the columns not drawn (MapRenderer_Q2ColumnShown). */
++int Frustum_TestBox(float x1, float y1, float z1, float x2, float y2, float z2, cc_bool far);
++static int Q2_TestChunk(struct ChunkInfo* c) {
++	int top = c->centreY + HALF_CHUNK_SIZE;
++	if (top < Env.EdgeHeight) top = Env.EdgeHeight;
++	return Frustum_TestBox(c->centreX - HALF_CHUNK_SIZE, c->centreY - HALF_CHUNK_SIZE, c->centreZ - HALF_CHUNK_SIZE,
++						   c->centreX + HALF_CHUNK_SIZE, (float)top, c->centreZ + HALF_CHUNK_SIZE, true);
++}
++static int Q2_FlatDist(struct ChunkInfo* c) {
++	int dx = c->centreX - chunkPos.x, dz = c->centreZ - chunkPos.z;
++	return dx * dx + dz * dz;
++}
++
++/* Whether the column's chunk at the sea's level is drawn (built and in view; an empty one, with
++ * nothing at that level, counts as drawn: no water to stand in for). Below it, the chunks are
++ * drawn with it (Q2_TestChunk); above, a hilltop past the far plane can be drawn without it, and
++ * then stands on the stand-in sea, not over the bedrock under the map. */
++cc_bool MapRenderer_Q2ColumnShown(int cx, int cz) {
++	struct ChunkInfo* c;
++	int cy = (Env.EdgeHeight - 1) >> CHUNK_SHIFT;
++	if (!mapChunks) return false;
++	if (cy < 0) cy = 0;
++	if (cy >= World.ChunksY) cy = World.ChunksY - 1;
++	c = &mapChunks[World_ChunkPack(cx, cy, cz)];
++	return c->empty || (c->visible && !c->noData);
++}
++#else
++#define Q2_TestChunk(c) Frustum_TestSphere((c)->centreX, (c)->centreY, (c)->centreZ, 14) /* 14 ~ sqrt(3 * 8^2) */
++#endif
++
+ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+ 	int renderDistSqr = renderDistSquared;
+ 	int buildDistSqr  = buildDistSquared;
+@@ -567,7 +622,11 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+ 	{
+ 		chunk = sortedChunks[i];
+ 		if (chunk->empty) continue;
++#ifdef CC_BUILD_Q2
++		distSqr = Q2_FlatDist(chunk);
++#else
+ 		distSqr = distances[i];
++#endif
+ 		
+ 		/* Auto unload chunks far away chunks */
+ 		if (!chunk->noData && distSqr >= buildDistSqr + 32 * 16) {
+@@ -582,7 +641,7 @@ static int UpdateChunksAndVisibility(int* chunkUpdates) {
+ 		if (distSqr > renderDistSqr) {
+ 			chunk->visible  = false;
+ 		} else {
+-			res = Frustum_TestSphere(chunk->centreX, chunk->centreY, chunk->centreZ, 14); /* 14 ~ sqrt(3 * 8^2) */
++			res = Q2_TestChunk(chunk);
+ 			chunk->visible  = res != FRUSTUM_OUTSIDE;
+ 			chunk->skipClip = Gfx_CanSphereSkipClipping(chunk->centreX, chunk->centreY, chunk->centreZ, 14);
+ 		}
+@@ -603,7 +662,11 @@ static int UpdateChunksStill(int* chunkUpdates) {
+ 	{
+ 		chunk = sortedChunks[i];
+ 		if (chunk->empty) continue;
++#ifdef CC_BUILD_Q2
++		distSqr = Q2_FlatDist(chunk);
++#else
+ 		distSqr = distances[i];
++#endif
+ 
+ 		/* Auto unload chunks far away chunks */
+ 		if (!chunk->noData && distSqr >= buildDistSqr + 32 * 16) {
+@@ -618,7 +681,7 @@ static int UpdateChunksStill(int* chunkUpdates) {
+ 			if (distSqr > renderDistSqr) {
+ 				chunk->visible  = false;
+ 			} else {
+-				res = Frustum_TestSphere(chunk->centreX, chunk->centreY, chunk->centreZ, 14); /* 14 ~ sqrt(3 * 8^2) */
++				res = Q2_TestChunk(chunk);
+ 				chunk->visible  = res != FRUSTUM_OUTSIDE;
+ 				chunk->skipClip = Gfx_CanSphereSkipClipping(chunk->centreX, chunk->centreY, chunk->centreZ, 14);
+ 			}
+diff --git a/src/MapRenderer.h b/src/MapRenderer.h
+index cf715b9..c79746f 100644
+--- a/src/MapRenderer.h
++++ b/src/MapRenderer.h
+@@ -51,6 +51,11 @@ struct ChunkInfo {
+ 	cc_uint8 drawYMin : 1;
+ 	cc_uint8 drawYMax : 1;
+ 	cc_uint8 : 0;          /* pad to next byte */
++#ifdef CC_BUILD_Q2
++	/* the box around the chunk's faces, in blocks from its corner (0 to 16; Builder.c): for
++	 * occlusion culling, which tests the box, not the whole 16 x 16 x 16 chunk */
++	cc_uint8 q2MinX, q2MinY, q2MinZ, q2MaxX, q2MaxY, q2MaxZ;
++#endif
+ #ifdef OCCLUSION
+ 	public cc_bool Visited = false, Occluded = false;
+ 	public byte OcclusionFlags, OccludedFlags, DistanceFlags;
+diff --git a/src/MenuOptions.c b/src/MenuOptions.c
+index c9a2d29..7868039 100644
+--- a/src/MenuOptions.c
++++ b/src/MenuOptions.c
+@@ -767,6 +767,50 @@ static void    GrO_SetMipmaps(cc_bool v) {
+ 	TexturePack_ExtractCurrent(true);
+ }
+ 
++#ifdef CC_BUILD_Q2
++/* q2-fastleaves (Platform_Q2.c, Block.c, TexturePack.c): switched at once, the leaves' block
++ * reset, the textures loaded again (the leaves' tile filled or not) and the world rebuilt */
++extern cc_bool Q2_FastLeaves;
++void Q2_RefreshLeaves(void);
++static cc_bool GrO_GetFastLeaves(void) { return Q2_FastLeaves; }
++/* q2-cores (Graphics_SoftGPU.c): the second core draws or not, from the next frame */
++void Q2_SetCores(int n);
++int  Q2_GetCores(void);
++static cc_bool GrO_GetSecondCore(void) { return Q2_GetCores() == 2; }
++static void    GrO_SetSecondCore(cc_bool v) {
++	Options_SetInt("q2-cores", v ? 2 : 1);
++	Q2_SetCores(v ? 2 : 1);
++}
++/* q2-occlusion (Graphics_SoftGPU.c): read each frame, so it changes at once */
++extern cc_bool Q2_Occlusion;
++static cc_bool GrO_GetOcclusion(void) { return Q2_Occlusion; }
++static void    GrO_SetOcclusion(cc_bool v) {
++	Q2_Occlusion = v;
++	Options_SetBool("q2-occlusion", v);
++}
++/* q2-renderscale (Graphics_SoftGPU.c): the world drawn smaller and stretched, from the next frame */
++void Q2_SetRenderScale(int pct);
++int  Q2_GetRenderScale(void);
++static const int   q2_scales[]     = { 100, 90, 80, 75, 67, 50 };
++static const char* const q2_scaleNames[] = { "100%", "90%", "80%", "75%", "67%", "50%" };
++static int  GrO_GetRenderScale(void) {
++	int i, pct = Q2_GetRenderScale();
++	for (i = 0; i < Array_Elems(q2_scales) - 1; i++) { if (pct >= q2_scales[i]) break; }
++	return i;
++}
++static void GrO_SetRenderScale(int v) {
++	Options_SetInt("q2-renderscale", q2_scales[v]);
++	Q2_SetRenderScale(q2_scales[v]);
++}
++static void    GrO_SetFastLeaves(cc_bool v) {
++	Q2_FastLeaves = v;
++	Options_SetBool("q2-fastleaves", v);
++	Q2_RefreshLeaves();
++	TexturePack_ExtractCurrent(true);
++	MapRenderer_Refresh();
++}
++#endif
++
+ static void GraphicsOptionsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 	MenuOptionsScreen_BeginButtons(s);
+ 	{
+@@ -779,10 +823,18 @@ static void GraphicsOptionsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 		MenuOptionsScreen_AddInt(s, "View distance",
+ 			8, 4096, 512,
+ 			GrO_GetViewDist,   GrO_SetViewDist, NULL);
++#ifdef CC_BUILD_Q2
++		/* in Smooth lighting's place (off by default here: smooth lighting is in options.txt) */
++		MenuOptionsScreen_AddEnum(s, "Render scale", q2_scaleNames, Array_Elems(q2_scaleNames),
++			GrO_GetRenderScale, GrO_SetRenderScale,
++			"&eThe world drawn smaller and stretched:\n" \
++			"    faster, blockier. Text stays sharp.");
++#else
+ 		MenuOptionsScreen_AddBool(s, "Smooth lighting",
+ 			GrO_GetSmooth,     GrO_SetSmooth,
+ 			"&eSmooth lighting smooths lighting and adds a minor glow to bright blocks.\n" \
+ 			"&cNote: &eThis setting may reduce performance.");
++#endif
+ 		MenuOptionsScreen_AddEnum(s, "Lighting mode", LightingMode_Names, LIGHTING_MODE_COUNT,
+ 			GrO_GetLighting,   GrO_SetLighting,
+ 			"&eClassic: &fTwo levels of light, sun and shadow.\n" \
+@@ -791,6 +843,13 @@ static void GraphicsOptionsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 			"    May heavily reduce performance.\n" \
+ 			"&cNote: &eIn multiplayer, this option may be changed or locked by the server.");
+ 			
++#ifdef CC_BUILD_Q2
++		/* in Names' place (other players' names: there are none offline) */
++		MenuOptionsScreen_AddBool(s, "Occlusion",
++			GrO_GetOcclusion,  GrO_SetOcclusion,
++			"&eSkips hidden chunks, behind hills\n" \
++			"    and walls: faster, looks the same.");
++#else
+ 		MenuOptionsScreen_AddEnum(s, "Names",   NameMode_Names,   NAME_MODE_COUNT,
+ 			GrO_GetNames,      GrO_SetNames,
+ 			"&eNone: &fNo names of players are drawn.\n" \
+@@ -798,6 +857,7 @@ static void GraphicsOptionsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 			"&eAll: &fNames of all other players are drawn normally.\n" \
+ 			"&eAllHovered: &fAll names of players are drawn see-through.\n" \
+ 			"&eAllUnscaled: &fAll names of players are drawn see-through without scaling.");
++#endif
+ 		MenuOptionsScreen_AddEnum(s, "Shadows", ShadowMode_Names, SHADOW_MODE_COUNT,
+ 			GrO_GetShadows,    GrO_SetShadows,
+ 			"&eNone: &fNo entity shadows are drawn.\n" \
+@@ -806,12 +866,29 @@ static void GraphicsOptionsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 			"&eCircleAll: &fA circular shadow is shown underneath all entities.");
+ 
+ 		if (!Gfx_GetUIOptions(s)) {
++#ifdef CC_BUILD_Q2
++		/* in Mipmaps' place (the software renderer has none) */
++		MenuOptionsScreen_AddBool(s, "Second core",
++			GrO_GetSecondCore, GrO_SetSecondCore,
++			"&eBoth of the Q2's cores draw the world:\n" \
++			"    faster. Off: one, cooler, slower.");
++#else
+ 		MenuOptionsScreen_AddBool(s, "Mipmaps",
+ 			GrO_GetMipmaps,    GrO_SetMipmaps, NULL);
++#endif
+ 		}
+ 
++#ifdef CC_BUILD_Q2
++		/* in 3D anaglyph's place (red and blue glasses, of little use on the Q2): the menu keeps
++		 * its eight buttons */
++		MenuOptionsScreen_AddBool(s, "Fast leaves",
++			GrO_GetFastLeaves, GrO_SetFastLeaves,
++			"&eSolid leaves, as Minecraft's Fast:\n" \
++			"    faster near trees.");
++#else
+ 		MenuOptionsScreen_AddBool(s, "3D anaglyph",
+ 			ClO_GetAnaglyph,   ClO_SetAnaglyph, NULL);
++#endif
+ 	};
+ 	MenuOptionsScreen_EndButtons(s, -1, Menu_SwitchOptions);
+ 	s->OnLightingModeServerChanged = GrO_CheckLightingModeAllowed;
+@@ -1186,7 +1263,9 @@ static void MiscSettingsScreen_InitWidgets(struct MenuOptionsScreen* s) {
+ 		MenuOptionsScreen_AddBool(s, "Invert mouse",
+ 			MiO_GetInvert,  MiO_SetInvert, NULL);
+ 		MenuOptionsScreen_AddInt(s,  "Mouse sensitivity", 
+-#ifdef CC_BUILD_WIN
++#if defined CC_BUILD_Q2
++			   1, 200, 42,
++#elif defined CC_BUILD_WIN
+ 			   1, 200, 40,
+ #else
+ 			   1, 200, 30,
+diff --git a/src/Menus.c b/src/Menus.c
+index ec6a07e..84dc2fe 100644
+--- a/src/Menus.c
++++ b/src/Menus.c
+@@ -484,6 +484,9 @@ static struct PauseScreen {
+ 	const struct SimpleButtonDesc* descs;
+ 	struct ButtonWidget btns[PAUSE_MAX_BTNS], quit, back;
+ 	struct TextWidget title;
++#ifdef CC_BUILD_Q2
++	struct ButtonWidget more; /* the touch UI's "...", shown only here (TouchUI.c) */
++#endif
+ } PauseScreen;
+ 
+ static void PauseScreenBase_Quit(void* a, void* b) { 
+@@ -512,7 +515,16 @@ static void PauseScreenBase_AddWidgets(struct PauseScreen* s, int width) {
+ /*########################################################################################################################*
+ *-------------------------------------------------------PauseScreen-------------------------------------------------------*
+ *#########################################################################################################################*/
+-static struct Widget* pause_widgets[1 + 6 + 2];
++static struct Widget* pause_widgets[1 + 6 + 2 + 1];
++
++#ifdef CC_BUILD_Q2
++/* "...": Screenshot, Chat, Fog, Controls and the rest, over the game (the menu closed, as the
++ * in-game "..." opened it: TouchMoreScreen is drawn under menus) */
++static void PauseScreen_More(void* a, void* b) {
++	Gui_Remove((struct Screen*)&PauseScreen);
++	TouchMoreScreen_Show();
++}
++#endif
+ 
+ static void PauseScreen_CheckHacksAllowed(void* screen) {
+ 	struct PauseScreen* s = (struct PauseScreen*)screen;
+@@ -529,6 +541,9 @@ static void PauseScreen_ContextRecreated(void* screen) {
+ 	PauseScreenBase_ContextRecreated(s, &titleFont);
+ 
+ 	ButtonWidget_SetConst(&s->quit, "Quit game", &titleFont);
++#ifdef CC_BUILD_Q2
++	ButtonWidget_SetConst(&s->more, "...", &titleFont);
++#endif
+ 	PauseScreen_CheckHacksAllowed(s);
+ 	Font_Free(&titleFont);
+ }
+@@ -539,6 +554,9 @@ static void PauseScreen_Layout(void* screen) {
+ 	Menu_LayoutBack(&s->back);
+ 	Widget_SetLocation(&s->quit,  ANCHOR_MAX,    ANCHOR_MAX,    5,    5);
+ 	Widget_SetLocation(&s->title, ANCHOR_CENTRE, ANCHOR_CENTRE, 0, -100);
++#ifdef CC_BUILD_Q2
++	Widget_SetLocation(&s->more,  ANCHOR_CENTRE, ANCHOR_MIN,    0,   10);
++#endif
+ }
+ 
+ static void PauseScreen_Init(void* screen) {
+@@ -562,6 +580,9 @@ static void PauseScreen_Init(void* screen) {
+ 	s->descsCount = Array_Elems(descs);
+ 	PauseScreenBase_AddWidgets(s, 300);
+ 	ButtonWidget_Add(s, &s->quit, 120, PauseScreenBase_Quit);
++#ifdef CC_BUILD_Q2
++	if (Gui.TouchUI) ButtonWidget_Add(s, &s->more, 40, PauseScreen_More);
++#endif
+ 	s->maxVertices = Screen_CalcDefaultMaxVertices(s);
+ 
+ 	if (Server.IsSinglePlayer) return;
+diff --git a/src/SystemFonts.c b/src/SystemFonts.c
+index 3fda68e..f9b4ad2 100644
+--- a/src/SystemFonts.c
++++ b/src/SystemFonts.c
+@@ -157,6 +157,15 @@ static int Fallback_CellWidth(const cc_uint8* rows) {
+ 	return width + 1; /* add 1 for padding */
+ }
+ 
++/* How far a glyph moves the pen at a scale */
++static int Fallback_Advance(const cc_uint8* rows, int scale) {
++#ifdef CC_BUILD_Q2
++	/* the padding a pixel narrower when scaled, so the larger text fits the Q2's menu buttons */
++	if (scale > 1) return Fallback_CellWidth(rows) * scale - 1;
++#endif
++	return Fallback_CellWidth(rows) * scale;
++}
++
+ int FallbackFont_TextWidth(const struct DrawTextArgs* args) { 
+ 	cc_string left = args->text, part;
+ 	int size  = args->font->size;
+@@ -172,7 +181,7 @@ int FallbackFont_TextWidth(const struct DrawTextArgs* args) {
+ 			if (c == ' ') {
+ 				width += SPACE_WIDTH * scale;
+ 			} else {
+-				width += Fallback_CellWidth(FallbackFont_GetRows(c)) * scale;
++				width += Fallback_Advance(FallbackFont_GetRows(c), scale);
+ 			}
+ 		}
+ 	}
+@@ -243,7 +252,7 @@ void FallbackFont_DrawText(struct DrawTextArgs* args, struct Bitmap* bmp, int x,
+ 			rows = FallbackFont_GetRows(c);
+ 
+ 			Fallback_DrawCell(bmp, x, y, scale, rows, color);
+-			x += Fallback_CellWidth(rows) * scale;
++			x += Fallback_Advance(rows, scale);
+ 		}
+ 	}
+ }
+diff --git a/src/TexturePack.c b/src/TexturePack.c
+index 5b3cc9d..ccb4ae1 100644
+--- a/src/TexturePack.c
++++ b/src/TexturePack.c
+@@ -168,12 +168,54 @@ static void Atlas_Update1D(void) {
+ 	Atlas1D.Shift = Math_ilog2(Atlas1D.TilesPerAtlas);
+ }
+ 
++#ifdef CC_BUILD_Q2
++#include "Block.h"
++#include "BlockID.h"
++/* q2-fastleaves: leaves are solid blocks (Block.c), so their tile's see-through pixels are
++ * filled, a dark shade of the tile's own average colour, as Minecraft's Fast leaves look:
++ * left see-through, the sky would show through a tree whose inner faces are no longer drawn */
++static void Atlas_FillLeaves(void) {
++	extern cc_bool Q2_FastLeaves;
++	int size = Atlas2D.TileSize, x, y, n = 0, r = 0, g = 0, b = 0;
++	TextureLoc loc = Block_Tex(BLOCK_LEAVES, FACE_XMAX);
++	BitmapCol* row;
++	if (!Q2_FastLeaves) return;
++	if (!loc) loc = 22; /* the classic terrain.png's leaves */
++	if (Atlas2D_TileY(loc) >= Atlas2D.RowsCount) return;
++
++	for (y = 0; y < size; y++)
++	{
++		row = Bitmap_GetRow(&Atlas2D.Bmp, Atlas2D_TileY(loc) * size + y) + Atlas2D_TileX(loc) * size;
++		for (x = 0; x < size; x++)
++		{
++			if (BitmapCol_A(row[x]) < 128) continue;
++			r += BitmapCol_R(row[x]); g += BitmapCol_G(row[x]); b += BitmapCol_B(row[x]); n++;
++		}
++	}
++	if (!n) return;
++	r = r / n * 9 / 20; g = g / n * 9 / 20; b = b / n * 9 / 20; /* 45% of the average */
++
++	for (y = 0; y < size; y++)
++	{
++		row = Bitmap_GetRow(&Atlas2D.Bmp, Atlas2D_TileY(loc) * size + y) + Atlas2D_TileX(loc) * size;
++		for (x = 0; x < size; x++)
++		{
++			if (BitmapCol_A(row[x]) < 128) row[x] = BitmapCol_Make(r, g, b, 255);
++			else row[x] = BitmapCol_Make(BitmapCol_R(row[x]), BitmapCol_G(row[x]), BitmapCol_B(row[x]), 255);
++		}
++	}
++}
++#endif
++
+ /* Loads the given atlas and converts it into an array of 1D atlases. */
+ static void Atlas_Update(struct Bitmap* bmp) {
+ 	Atlas2D.Bmp       = *bmp;
+ 	Atlas2D.TileSize  = bmp->width  / ATLAS2D_TILES_PER_ROW;
+ 	Atlas2D.RowsCount = bmp->height / Atlas2D.TileSize;
+ 	Atlas2D.RowsCount = min(Atlas2D.RowsCount, ATLAS2D_MAX_ROWS_COUNT);
++#ifdef CC_BUILD_Q2
++	Atlas_FillLeaves();
++#endif
+ 
+ 	Atlas_Update1D();
+ 	Atlas_Convert2DTo1D();
+@@ -616,13 +658,38 @@ static cc_result ExtractFromFile(const cc_string* path) {
+ }
+ #endif
+ 
++#ifdef CC_BUILD_Q2
++/* The default texture pack from the card, only if it's there (no error in chat when it isn't): */
++static cc_result Q2_ExtractIfThere(const cc_string* path) {
++	cc_filepath raw;
++	Platform_EncodePath(&raw, path);
++	if (!File_Exists(&raw)) return ReturnCode_FileNotFound;
++	return ExtractFromFile(path);
++}
++
++/* else the copy built into the program (Platform_Q2.c) */
++extern const cc_uint8 q2_textures[], q2_textures_end[];
++static cc_result Q2_ExtractBuiltIn(void) {
++	static const cc_string name = String_FromConst("texpacks/default.zip (built in)");
++	struct Stream stream;
++	Platform_LogConst("texpacks/default.zip missing or unreadable: using the textures built in");
++	Stream_ReadonlyMemory(&stream, q2_textures, (cc_uint32)(q2_textures_end - q2_textures));
++	return ExtractFrom(&stream, &name);
++}
++#endif
++
+ static cc_result ExtractUserTextures(void) {
+ 	const char* default_path;
+ 	cc_string path;
+ 	cc_result res;
+ 
+ 	/* TODO: Log error for multiple default texture pack extract failure */
++#ifdef CC_BUILD_Q2
++	res = TexturePack_ExtractDefault(Q2_ExtractIfThere, &default_path);
++	if (res) res = Q2_ExtractBuiltIn();
++#else
+ 	res = TexturePack_ExtractDefault(ExtractFromFile, &default_path);
++#endif
+ 	/* Game shows a warning dialog if default textures are missing */
+ 	TexturePack_DefaultMissing = res == ReturnCode_FileNotFound;
+ 
+diff --git a/src/TouchUI.c b/src/TouchUI.c
+index eeb7d05..24cd9b7 100644
+--- a/src/TouchUI.c
++++ b/src/TouchUI.c
+@@ -43,7 +43,12 @@
+ #define ONSCREEN_MAX_BTNS 13
+ 
+ static int GetOnscreenButtons(void) {
++#ifdef CC_BUILD_Q2
++	/* none: Centre pressed twice flies, and the Q2's screen is small (Controls can add them) */
++	#define DEFAULT_SP_ONSCREEN 0
++#else
+ 	#define DEFAULT_SP_ONSCREEN (ONSCREEN_BTN_FLY | ONSCREEN_BTN_SPEED)
++#endif
+ 	#define DEFAULT_MP_ONSCREEN (ONSCREEN_BTN_FLY | ONSCREEN_BTN_SPEED | ONSCREEN_BTN_CHAT)
+ 	
+ 	return Options_GetInt(OPT_TOUCH_BUTTONS, 0, Int32_MaxValue,
+@@ -514,7 +519,12 @@ static struct TouchScreen {
+ 
+ static struct Widget* touch_widgets[ONSCREEN_MAX_BTNS + TOUCH_EXTRA_BTNS + 2] = {
+ 	NULL,NULL,NULL,NULL, NULL,NULL,NULL,NULL, NULL,NULL,NULL,NULL, NULL,
++#ifdef CC_BUILD_Q2
++	/* no "..." over the game: the Game menu has it (Menus.c), leaving the top of the view clear */
++	NULL,NULL, (struct Widget*)&TouchScreen.thumbstick, NULL
++#else
+ 	NULL,NULL, (struct Widget*)&TouchScreen.thumbstick, (struct Widget*)&TouchScreen.more
++#endif
+ };
+ #define TOUCH_MAX_VERTICES (THUMBSTICKWIDGET_MAX + TOUCH_MAX_BTNS * BUTTONWIDGET_MAX)
+ 
+@@ -595,6 +605,10 @@ static void TouchScreen_InitButtons(struct TouchScreen* s) {
+ 		descs      = normDescs;
+ 		s->numBtns = Array_Elems(normDescs);
+ 	}
++#ifdef CC_BUILD_Q2
++	/* The Q2's buttons do these: Centre jumps and flies up, Play/Pause flies down */
++	s->numBtns = 0;
++#endif
+ 
+ 	for (i = 0; i < s->numBtns; i++) 
+ 	{
+@@ -693,15 +707,17 @@ static void TouchScreen_LayoutOnscreen(struct TouchScreen* s, cc_uint8 alignment
+ 	struct TouchButtonDesc* desc;
+ 	int i, x, y;
+ 	cc_uint8 halign;
++	/* the column of buttons runs down to the jump or fly buttons, or half way with neither */
++	int limit = s->numBtns ? s->btns[0].y : Window_Main.Height / 2;
+ 
+-	for (i = 0, x = 10, y = 10; i < s->numOnscreen; i++) 
++	for (i = 0, x = 10, y = 10; i < s->numOnscreen; i++)
+ 	{
+ 		desc   = (struct TouchButtonDesc*)s->onscreen[i].meta.ptr;
+ 		halign = desc->x;
+ 		if (halign != alignment) continue;
+ 		
+ 		Widget_SetLocation(&s->onscreen[i], halign, ANCHOR_MIN, x, y);
+-		if (s->onscreen[i].y + s->onscreen[i].height <= s->btns[0].y){ y += 40; continue; }
++		if (s->onscreen[i].y + s->onscreen[i].height <= limit){ y += 40; continue; }
+ 
+ 		// overflowed onto jump/fly buttons, move to next column
+ 		y = 10;
+@@ -737,6 +753,10 @@ static void TouchScreen_Layout(void* screen) {
+ 
+ 	Widget_SetLocation(&s->thumbstick, ANCHOR_MIN, ANCHOR_MAX, 30, 5);
+ 	s->thumbstick.yOffset += height;
++#ifdef CC_BUILD_Q2
++	/* up clear of the hotbar's left end, which its lower arrow overlapped */
++	s->thumbstick.yOffset += Display_ScaleY(14);
++#endif
+ 	s->thumbstick.scale = scale;
+ 	Widget_Layout(&s->thumbstick);
+ }
+diff --git a/src/Vectors.c b/src/Vectors.c
+index dff599a..bbbdf81 100644
+--- a/src/Vectors.c
++++ b/src/Vectors.c
+@@ -184,6 +184,27 @@ struct Plane { float a, b, c, d; };
+ struct FrustumPlanes { struct Plane L, R, B, T, F; };
+ static struct FrustumPlanes frustum;
+ 
++#ifdef CC_BUILD_Q2
++/* Whether the box could be in view: outside if wholly behind one plane (its corner farthest along
++ * the plane's normal is behind it). As Frustum_TestSphere, the near plane isn't tested. */
++static cc_bool Q2_BoxOutside(const struct Plane* p, float x1, float y1, float z1,
++							 float x2, float y2, float z2) {
++	float x = p->a >= 0 ? x2 : x1, y = p->b >= 0 ? y2 : y1, z = p->c >= 0 ? z2 : z1;
++	return p->a * x + p->b * y + p->c * z + p->d < 0;
++}
++
++/* far: the far plane too (MapRenderer's chunks); without, for what's drawn past it (EnvRenderer's
++ * stand-in sea, which is there because the chunks past it aren't) */
++int Frustum_TestBox(float x1, float y1, float z1, float x2, float y2, float z2, cc_bool far) {
++	if (Q2_BoxOutside(&frustum.L, x1, y1, z1, x2, y2, z2)) return FRUSTUM_OUTSIDE;
++	if (Q2_BoxOutside(&frustum.R, x1, y1, z1, x2, y2, z2)) return FRUSTUM_OUTSIDE;
++	if (Q2_BoxOutside(&frustum.B, x1, y1, z1, x2, y2, z2)) return FRUSTUM_OUTSIDE;
++	if (Q2_BoxOutside(&frustum.T, x1, y1, z1, x2, y2, z2)) return FRUSTUM_OUTSIDE;
++	if (far && Q2_BoxOutside(&frustum.F, x1, y1, z1, x2, y2, z2)) return FRUSTUM_OUTSIDE;
++	return FRUSTUM_ON_OR_IN;
++}
++#endif
++
+ int Frustum_TestSphere(float x, float y, float z, float radius) {
+ 	float d;
+ 
+diff --git a/src/Widgets.c b/src/Widgets.c
+index 715d06c..f439c3b 100644
+--- a/src/Widgets.c
++++ b/src/Widgets.c
+@@ -260,7 +260,12 @@ void ButtonWidget_Init(struct ButtonWidget* w, int minWidth, Widget_LeftClick on
+ 	w->optName   = NULL;
+ 	w->flags     = WIDGET_FLAG_SELECTABLE;
+ 	w->minWidth  = Display_ScaleX(minWidth);
++#ifdef CC_BUILD_Q2
++	/* thicker, for a finger on the Q2's small screen: menu rows are 50 apart, so 46 keeps a gap */
++	w->minHeight = Display_ScaleY(46);
++#else
+ 	w->minHeight = Display_ScaleY(40);
++#endif
+ 	w->MenuClick = onClick;
+ }
+ 

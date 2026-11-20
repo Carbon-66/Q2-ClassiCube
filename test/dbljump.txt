@@ -1,0 +1,19 @@
+# Centre pressed twice quickly: flying on; held, it climbs; twice again: off, and down you come
+3.0 snap d0-start
+3.2 k d 218
+3.3 k u 218
+3.45 k d 218
+4.6 k u 218
+4.9 snap d1-flying
+5.5 snap d1b-still
+6.0 k d 218
+6.1 k u 218
+6.25 k d 218
+6.35 k u 218
+7.5 snap d2-off
+# two presses far apart: no toggle
+8.0 k d 218
+8.1 k u 218
+8.8 k d 218
+8.9 k u 218
+9.6 snap d3-slow

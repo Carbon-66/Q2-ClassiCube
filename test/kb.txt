@@ -1,0 +1,47 @@
+3.0 k d 170
+3.1 k u 170
+3.6 t d 93 130
+3.7 t u 93 130
+4.3 snap k1-options
+4.5 t d 93 160
+4.6 t u 93 160
+5.2 snap k2-graphics
+# View distance: its number field
+5.4 t d 93 130
+5.5 t u 93 130
+# Centre on the field: the numpad opens, on 1
+6.0 k d 218
+6.1 k u 218
+6.5 snap k3-numpad
+# clockwise 3: 2, 3, Backspace; Centre three times clears the view distance (80 by default: the third press finds it empty)
+6.7 w -28
+6.8 w -28
+6.9 w -28
+7.0 k d 218
+7.1 k u 218
+7.2 k d 218
+7.3 k u 218
+7.4 k d 218
+7.5 k u 218
+7.6 snap k4-cleared
+# anticlockwise 3: 3, 2, 1; Centre types 1
+7.8 w 28
+7.9 w 28
+8.0 w 28
+8.1 k d 218
+8.2 k u 218
+# clockwise 5: 2, 3, Backspace, 4, 5, 6; Centre types 6
+8.3 w -28
+8.4 w -28
+8.5 w -28
+8.6 w -28
+8.7 w -28
+8.8 w -28
+8.9 k d 218
+9.0 k u 218
+9.3 snap k5-typed
+# clockwise 1: Enter; Centre submits
+9.5 w -28
+9.6 k d 218
+9.7 k u 218
+10.2 snap k6-done

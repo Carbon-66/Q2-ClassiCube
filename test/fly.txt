@@ -1,0 +1,20 @@
+# Centre twice quickly (fly on), then rise with Centre and sink with Play/Pause; Next and Previous move along the hotbar
+3.0 k d 218
+3.05 k u 218
+3.15 k d 218
+3.2 k u 218
+3.5 snap f0-flying
+3.6 k d 218
+5.0 k u 218
+5.3 snap f1-up
+5.4 k d 171
+6.4 k u 171
+6.7 snap f2-down
+6.8 k d 223
+6.9 k u 223
+7.0 k d 223
+7.1 k u 223
+7.4 snap f3-next2
+7.5 k d 222
+7.6 k u 222
+7.9 snap f4-prev1

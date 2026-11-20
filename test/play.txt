@@ -1,0 +1,36 @@
+# a short play session: AT_SECONDS DATAGRAM
+3.0 snap p0-start
+# walk forward: hold the stick (bottom left) and drag up
+3.2 t d 55 240
+3.3 t m 55 220
+3.4 t m 55 205
+5.0 snap p1-walking
+5.1 t u 55 205
+# look: drag on the right half
+5.5 t d 250 150
+5.6 t m 230 150
+5.7 t m 200 140
+5.8 t m 180 130
+5.9 t u 180 130
+6.3 snap p2-looked
+# wheel: turn left about 90 degrees
+6.5 w 50
+6.6 w 50
+7.0 snap p3-wheel
+# jump with Centre
+7.2 k d 218
+7.3 snap p4-jump
+7.4 k u 218
+# tap the middle: place a block
+8.0 t d 187 140
+8.1 t u 187 140
+8.6 snap p5-placed
+# Return: pause menu
+9.0 k d 170
+9.1 k u 170
+9.6 snap p6-menu
+# wheel in the menu, then Return back to the game
+10.0 w 30
+10.3 k d 170
+10.4 k u 170
+10.9 snap p7-back

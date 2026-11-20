@@ -1,0 +1,6 @@
+# Next twice with its releases lost: each down a second apart is a new press
+6.0 snap l0
+6.2 k d 223
+6.8 snap l1
+7.4 k d 223
+8.0 snap l2
