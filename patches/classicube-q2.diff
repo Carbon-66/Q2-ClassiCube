@@ -135,7 +135,7 @@ index 8b206a3..ff43e04 100644
  }
  
 diff --git a/src/EnvRenderer.c b/src/EnvRenderer.c
-index 5e7cf6a..1165077 100644
+index 5e7cf6a..596b99b 100644
 --- a/src/EnvRenderer.c
 +++ b/src/EnvRenderer.c
 @@ -23,6 +23,13 @@
@@ -152,7 +152,27 @@ index 5e7cf6a..1165077 100644
  	if (Gfx.Limitations & GFX_LIMIT_MAX_VERTEX_SIZE) return 8;
  
  	return EnvRenderer_Legacy ? 128 : 2048;
-@@ -818,6 +825,77 @@ void EnvRenderer_RenderMapSides(void) {
+@@ -129,6 +136,19 @@ void EnvRenderer_UpdateFog(void) {
+ 
+ 	fogColor = CalcFog(&fogDensity);
+ 	Gfx_ClearColor(fogColor);
++#ifdef CC_BUILD_Q2
++	{
++		/* the sky as a gradient (Graphics_SoftGPU.c Q2_SkyFill), not underwater or in lava (their
++		 * own fog: the clear colour). A world with the default colours gets Minecraft's: its plains
++		 * sky overhead (#78A7FF) and its daytime fog at the horizon (#C0D8FF); another, its own sky
++		 * colour overhead and its fog colour at the horizon */
++		extern void Gfx_Q2SetSky(cc_bool on, PackedCol top, PackedCol horizon);
++		cc_bool defaults = Env.SkyCol == ENV_DEFAULT_SKY_COLOR && Env.FogCol == ENV_DEFAULT_FOG_COLOR;
++		Gfx_Q2SetSky(fogDensity == 0.0f,
++			defaults ? PackedCol_Make(0x78, 0xA7, 0xFF, 0xFF) : Env.SkyCol,
++			defaults ? PackedCol_Make(0xC0, 0xD8, 0xFF, 0xFF) : fogColor);
++	}
++#endif
+ 
+ 	if (EnvRenderer_Minimal) {
+ 		UpdateFogMinimal(fogDensity);
+@@ -818,6 +838,77 @@ void EnvRenderer_RenderMapSides(void) {
  	RenderBorders(Env.SidesBlock, sides_vb, sides_tex, sides_vertices);
  }
  
@@ -230,7 +250,7 @@ index 5e7cf6a..1165077 100644
  void EnvRenderer_RenderMapEdges(void) {
  	/* Do not draw water when player cannot see it */
  	/* Fixes some 'depth bleeding through' issues with 16 bit depth buffers on large maps */
-@@ -829,6 +907,9 @@ void EnvRenderer_RenderMapEdges(void) {
+@@ -829,6 +920,9 @@ void EnvRenderer_RenderMapEdges(void) {
  		if (!edges_vb) return;
  	}
  	RenderBorders(Env.EdgeBlock, edges_vb, edges_tex, edges_vertices);
@@ -240,7 +260,7 @@ index 5e7cf6a..1165077 100644
  }
  
  
-@@ -873,6 +954,10 @@ static void DeleteStaticVbs(void) {
+@@ -873,6 +967,10 @@ static void DeleteStaticVbs(void) {
  
  static void OnContextLost(void* obj) {
  	DeleteStaticVbs();
@@ -252,7 +272,7 @@ index 5e7cf6a..1165077 100644
  	Gfx_DeleteTexture(&sides_tex);
  	Gfx_DeleteTexture(&edges_tex);
 diff --git a/src/Graphics_SoftGPU.c b/src/Graphics_SoftGPU.c
-index aa0ba88..a136bba 100644
+index aa0ba88..3b28036 100644
 --- a/src/Graphics_SoftGPU.c
 +++ b/src/Graphics_SoftGPU.c
 @@ -23,6 +23,20 @@ static int db_stride;
@@ -302,7 +322,61 @@ index aa0ba88..a136bba 100644
  }
  
  void Gfx_Free(void) { 
-@@ -158,12 +184,112 @@ static void ClearColorBuffer(void) {
+@@ -142,8 +168,53 @@ static void SetAlphaBlend(cc_bool enabled) {
+ 
+ void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
+ 
++#ifdef CC_BUILD_Q2
++/* The sky (from 1.23): a gradient as Minecraft's, pale at the horizon and deeper blue overhead, in
++ * place of one colour (the minimal environment draws no sky mesh: the clear was the sky, and was
++ * the fog's near-white). Each row of the picture gets the colour for how high its middle looks, from
++ * the camera's view and projection: filled before the first 3D draw (Q2_SkyFill), when this frame's
++ * matrices are in, not at the clear, which comes before the camera's update. Underwater (the
++ * camera in a block with its own fog) the clear colour is used as before (Gfx_Q2SetSky). */
++static cc_bool q2_skyOn, q2_skyPending;
++static PackedCol q2_skyTop, q2_skyHorizon;
++
++void Gfx_Q2SetSky(cc_bool on, PackedCol top, PackedCol horizon) {
++	q2_skyOn = on; q2_skyTop = top; q2_skyHorizon = horizon;
++}
++
++static struct Matrix _view, _proj;
++static void Q2_SkyFill(void) {
++	/* a row's ray, in the view's space (0, a, -1) with a its height over the projection's scale;
++	 * its height in the world is a * view.row2.y - view.row2.z (the view's rotation inverted) */
++	float scale = _proj.row2.y ? 1.0f / _proj.row2.y : 1.0f;
++	int x, y, i;
++	q2_skyPending = false;
++
++	for (y = 0; y < fb_height; y++)
++	{
++		float a = (1.0f - 2.0f * (y + 0.5f) / fb_height) * scale;
++		float up = (a * _view.row2.y - _view.row2.z) / Math_SqrtF(a * a + 1.0f);
++		/* the horizon's colour up to it, then towards the top's, nearly all of the way by 25 degrees */
++		float t = up <= 0 ? 0 : up >= 0.42f ? 1 : up / 0.42f;
++		BitmapCol c;
++		int R, G, B;
++		t = t * (2 - t); /* eased: rising fast from the horizon */
++		R = (int)(PackedCol_R(q2_skyHorizon) + (PackedCol_R(q2_skyTop) - PackedCol_R(q2_skyHorizon)) * t);
++		G = (int)(PackedCol_G(q2_skyHorizon) + (PackedCol_G(q2_skyTop) - PackedCol_G(q2_skyHorizon)) * t);
++		B = (int)(PackedCol_B(q2_skyHorizon) + (PackedCol_B(q2_skyTop) - PackedCol_B(q2_skyHorizon)) * t);
++		c = BitmapCol_Make(R, G, B, 0xFF);
++
++		i = y * cb_stride;
++		for (x = 0; x < fb_width; x++) colorBuffer[i + x] = c;
++	}
++}
++#endif
++
+ static void ClearColorBuffer(void) {
+ 	int i, x, y, size = fb_width * fb_height;
++#ifdef CC_BUILD_Q2
++	if (q2_skyOn) { q2_skyPending = true; return; } /* filled at the first draw (Q2_SkyFill) */
++#endif
+ 
+ 	if (cb_stride == fb_width) {
+ 		for (i = 0; i < size; i++) colorBuffer[i] = clearColor;
+@@ -158,12 +229,113 @@ static void ClearColorBuffer(void) {
  	}
  }
  
@@ -348,8 +422,8 @@ index aa0ba88..a136bba 100644
 +	if (q2_tilesX * q2_tilesY > Q2_TILES_MAX) q2_tilesX = q2_tilesY = 0;
 +	for (i = 0; i < q2_tilesX * q2_tilesY; i++) { q2_tileFar[i] = Q2_FAR; q2_tileDirty[i] = 0; }
 +#endif
-+}
-+
+ }
+ 
 +#ifdef CC_BUILD_Q2
 +/* Draws in buf (w x h): the sizes, and the viewport, its */
 +static void Q2_UseTarget(BitmapCol* buf, int w, int h) {
@@ -379,10 +453,11 @@ index aa0ba88..a136bba 100644
 +		in = q2_low + sy * q2_lowW;
 +		for (x = 0; x < q2_fullW; x++) out[x] = in[srcX[x]];
 +	}
- }
- 
++}
++
 +/* Before 2D, and at a frame's end: the world's picture onto the view's, then the view's drawn in */
 +static void Q2_Begin2D(void) {
++	if (q2_skyPending) Q2_SkyFill(); /* a frame with nothing 3D drawn */
 +	if (q2_scenePending && q2_low) Q2_Stretch();
 +	q2_scenePending = false;
 +	if (colorBuffer != q2_full) Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
@@ -415,7 +490,19 @@ index aa0ba88..a136bba 100644
  	if (buffers & GFX_BUFFER_COLOR) ClearColorBuffer();
  	if (buffers & GFX_BUFFER_DEPTH) ClearDepthBuffer();
  }
-@@ -553,16 +679,42 @@ static void DrawTriangle2D(Vertex* V0, Vertex* V1, Vertex* V2) {
+@@ -230,7 +402,10 @@ void Gfx_UnlockVb(GfxResourceID vb) { }
+ *---------------------------------------------------------Matrices--------------------------------------------------------*
+ *#########################################################################################################################*/
+ static float texOffsetX, texOffsetY;
+-static struct Matrix _view, _proj, _mvp;
++static struct Matrix _mvp;
++#ifndef CC_BUILD_Q2
++static struct Matrix _view, _proj;
++#endif
+ 
+ void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
+ 	if (type == MATRIX_VIEW) _view = *matrix;
+@@ -553,16 +728,42 @@ static void DrawTriangle2D(Vertex* V0, Vertex* V1, Vertex* V2) {
  	b2 = BitmapCol_B(tColor); \
  	B  = ( b1 * b2 ) >> 8;    \
  
@@ -467,7 +554,7 @@ index aa0ba88..a136bba 100644
  	if (faceCulling) {
  		// https://gamedev.stackexchange.com/questions/203694/how-to-make-backface-culling-work-correctly-in-both-orthographic-and-perspective
  		if (area < 0) return;
-@@ -593,9 +745,9 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
+@@ -593,9 +794,9 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
  	
  	// https://fgiesen.wordpress.com/2013/02/10/optimizing-the-basic-rasterizer/
  	// Essentially these are the deltas of edge functions between X/Y and X/Y + 1 (i.e. one X/Y step)
@@ -480,7 +567,7 @@ index aa0ba88..a136bba 100644
  
  	float bc0_start = edgeFunction(x1,y1, x2,y2, minX+0.5f,minY+0.5f);
  	float bc1_start = edgeFunction(x2,y2, x0,y0, minX+0.5f,minY+0.5f);
-@@ -622,6 +774,214 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
+@@ -622,6 +823,214 @@ static void DrawTriangle3D(Vertex* V0, Vertex* V1, Vertex* V2) {
  		texturing = false;
  	}
  
@@ -695,7 +782,7 @@ index aa0ba88..a136bba 100644
  	for (y = minY; y <= maxY; y++, bc0_start += dy12, bc1_start += dy20, bc2_start += dy01) 
  	{
  		float bc0 = bc0_start;
-@@ -702,7 +1062,7 @@ static void ClipLine(Vertex* v1, Vertex* v2, Vertex* V) {
+@@ -702,7 +1111,7 @@ static void ClipLine(Vertex* v1, Vertex* v2, Vertex* V) {
  }
  
  // https://casual-effects.com/research/McGuire2011Clipping/clip.glsl
@@ -704,7 +791,7 @@ index aa0ba88..a136bba 100644
  	Vertex tmp[2];
  	Vertex* a = &tmp[0];
  	Vertex* b = &tmp[1];
-@@ -723,7 +1083,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -723,7 +1132,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -713,7 +800,7 @@ index aa0ba88..a136bba 100644
  	}
      break;
  	case V1_VIS:
-@@ -741,7 +1101,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -741,7 +1150,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -722,7 +809,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V2_VIS:
  	{
-@@ -758,7 +1118,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -758,7 +1167,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -731,7 +818,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V3_VIS:
  	{
-@@ -775,7 +1135,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -775,7 +1184,7 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  		
@@ -740,7 +827,7 @@ index aa0ba88..a136bba 100644
  	}
  	break;
  	case V0_VIS | V1_VIS:
-@@ -793,8 +1153,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -793,8 +1202,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -751,7 +838,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	// case V0_VIS | V2_VIS: degenerate case that should never happen
  	case V0_VIS | V3_VIS:
-@@ -812,8 +1172,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -812,8 +1221,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -762,7 +849,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V1_VIS | V2_VIS:
  	{
-@@ -830,8 +1190,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -830,8 +1239,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -773,7 +860,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	// case V1_VIS | V3_VIS: degenerate case that should never happen
  	case V2_VIS | V3_VIS:
-@@ -849,8 +1209,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -849,8 +1258,8 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -784,7 +871,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V0_VIS | V1_VIS | V2_VIS:
  	{
-@@ -870,9 +1230,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -870,9 +1279,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -797,7 +884,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V0_VIS | V1_VIS | V3_VIS:
  	{
-@@ -892,9 +1252,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -892,9 +1301,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -810,7 +897,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V0_VIS | V2_VIS | V3_VIS:
  	{
-@@ -914,9 +1274,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -914,9 +1323,9 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -823,7 +910,7 @@ index aa0ba88..a136bba 100644
  	} break;
  	case V1_VIS | V2_VIS | V3_VIS:
  	{
-@@ -936,17 +1296,339 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
+@@ -936,17 +1345,340 @@ static void DrawClipped(int mask, Vertex* v0, Vertex* v1, Vertex* v2, Vertex* v3
  		ViewportVertex3D(a);
  		ViewportVertex3D(b);
  
@@ -1162,11 +1249,12 @@ index aa0ba88..a136bba 100644
  
 +#ifdef CC_BUILD_Q2
 +	if (gfx_rendering2D) Q2_Begin2D();
++	else if (q2_skyPending) Q2_SkyFill();
 +#endif
  	if (gfx_rendering2D && (hints & (DRAW_HINT_SPRITE|DRAW_HINT_RECT))) {
  		// 4 vertices = 1 quad = 2 triangles
  		for (i = 0; i < verticesCount / 4; i++, j += 4)
-@@ -970,30 +1652,7 @@ void DrawQuads(int startVertex, int verticesCount, DrawHints hints) {
+@@ -970,30 +1702,7 @@ void DrawQuads(int startVertex, int verticesCount, DrawHints hints) {
  			DrawTriangle2D(&vertices[2], &vertices[0], &vertices[3]);
  		}
  	} else {
@@ -1198,7 +1286,7 @@ index aa0ba88..a136bba 100644
  	}
  }
  
-@@ -1023,6 +1682,9 @@ static BitmapCol* CB_GetRow(struct Bitmap* bmp, int y, void* ctx) {
+@@ -1023,6 +1732,9 @@ static BitmapCol* CB_GetRow(struct Bitmap* bmp, int y, void* ctx) {
  
  cc_result Gfx_TakeScreenshot(struct Stream* output) {
  	struct Bitmap bmp;
@@ -1208,7 +1296,7 @@ index aa0ba88..a136bba 100644
  	Bitmap_Init(bmp, fb_width, fb_height, NULL);
  	return Png_Encode(&bmp, output, CB_GetRow, false, NULL);
  }
-@@ -1034,6 +1696,9 @@ void Gfx_BeginFrame(void) { }
+@@ -1034,6 +1746,9 @@ void Gfx_BeginFrame(void) { }
  
  void Gfx_EndFrame(void) {
      Rect2D r;
@@ -1218,7 +1306,7 @@ index aa0ba88..a136bba 100644
  	r.x = 0;
  	r.y = 0; 
  	r.width  = fb_width;
-@@ -1049,6 +1714,15 @@ void Gfx_SetVSync(cc_bool vsync) {
+@@ -1049,6 +1764,15 @@ void Gfx_SetVSync(cc_bool vsync) {
  void Gfx_OnWindowResize(int width, int height) {
  	if (depthBuffer) DestroyBuffers();
  
@@ -1234,7 +1322,7 @@ index aa0ba88..a136bba 100644
  	fb_width   = width;
  	fb_height  = height;
  
-@@ -1061,8 +1735,14 @@ void Gfx_OnWindowResize(int width, int height) {
+@@ -1061,8 +1785,14 @@ void Gfx_OnWindowResize(int width, int height) {
  
  	Gfx_SetViewport(0, 0, width, height);
  	Gfx_SetScissor (0, 0, width, height);
@@ -1249,7 +1337,7 @@ index aa0ba88..a136bba 100644
  void Gfx_SetViewport(int x, int y, int w, int h) {
  	vp_hwidth  = w / 2.0f;
  	vp_hheight = h / 2.0f;
-@@ -1073,6 +1753,7 @@ void Gfx_SetScissor (int x, int y, int w, int h) {
+@@ -1073,6 +1803,7 @@ void Gfx_SetScissor (int x, int y, int w, int h) {
  	fb_maxX = x + w - 1;
  	fb_maxY = y + h - 1;
  }

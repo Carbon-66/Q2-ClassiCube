@@ -168,8 +168,53 @@ static void SetAlphaBlend(cc_bool enabled) {
 
 void Gfx_SetAlphaArgBlend(cc_bool enabled) { }
 
+#ifdef CC_BUILD_Q2
+/* The sky (from 1.23): a gradient as Minecraft's, pale at the horizon and deeper blue overhead, in
+ * place of one colour (the minimal environment draws no sky mesh: the clear was the sky, and was
+ * the fog's near-white). Each row of the picture gets the colour for how high its middle looks, from
+ * the camera's view and projection: filled before the first 3D draw (Q2_SkyFill), when this frame's
+ * matrices are in, not at the clear, which comes before the camera's update. Underwater (the
+ * camera in a block with its own fog) the clear colour is used as before (Gfx_Q2SetSky). */
+static cc_bool q2_skyOn, q2_skyPending;
+static PackedCol q2_skyTop, q2_skyHorizon;
+
+void Gfx_Q2SetSky(cc_bool on, PackedCol top, PackedCol horizon) {
+	q2_skyOn = on; q2_skyTop = top; q2_skyHorizon = horizon;
+}
+
+static struct Matrix _view, _proj;
+static void Q2_SkyFill(void) {
+	/* a row's ray, in the view's space (0, a, -1) with a its height over the projection's scale;
+	 * its height in the world is a * view.row2.y - view.row2.z (the view's rotation inverted) */
+	float scale = _proj.row2.y ? 1.0f / _proj.row2.y : 1.0f;
+	int x, y, i;
+	q2_skyPending = false;
+
+	for (y = 0; y < fb_height; y++)
+	{
+		float a = (1.0f - 2.0f * (y + 0.5f) / fb_height) * scale;
+		float up = (a * _view.row2.y - _view.row2.z) / Math_SqrtF(a * a + 1.0f);
+		/* the horizon's colour up to it, then towards the top's, nearly all of the way by 25 degrees */
+		float t = up <= 0 ? 0 : up >= 0.42f ? 1 : up / 0.42f;
+		BitmapCol c;
+		int R, G, B;
+		t = t * (2 - t); /* eased: rising fast from the horizon */
+		R = (int)(PackedCol_R(q2_skyHorizon) + (PackedCol_R(q2_skyTop) - PackedCol_R(q2_skyHorizon)) * t);
+		G = (int)(PackedCol_G(q2_skyHorizon) + (PackedCol_G(q2_skyTop) - PackedCol_G(q2_skyHorizon)) * t);
+		B = (int)(PackedCol_B(q2_skyHorizon) + (PackedCol_B(q2_skyTop) - PackedCol_B(q2_skyHorizon)) * t);
+		c = BitmapCol_Make(R, G, B, 0xFF);
+
+		i = y * cb_stride;
+		for (x = 0; x < fb_width; x++) colorBuffer[i + x] = c;
+	}
+}
+#endif
+
 static void ClearColorBuffer(void) {
 	int i, x, y, size = fb_width * fb_height;
+#ifdef CC_BUILD_Q2
+	if (q2_skyOn) { q2_skyPending = true; return; } /* filled at the first draw (Q2_SkyFill) */
+#endif
 
 	if (cb_stride == fb_width) {
 		for (i = 0; i < size; i++) colorBuffer[i] = clearColor;
@@ -261,6 +306,7 @@ static void Q2_Stretch(void) {
 
 /* Before 2D, and at a frame's end: the world's picture onto the view's, then the view's drawn in */
 static void Q2_Begin2D(void) {
+	if (q2_skyPending) Q2_SkyFill(); /* a frame with nothing 3D drawn */
 	if (q2_scenePending && q2_low) Q2_Stretch();
 	q2_scenePending = false;
 	if (colorBuffer != q2_full) Q2_UseTarget(q2_full, q2_fullW, q2_fullH);
@@ -356,7 +402,10 @@ void Gfx_UnlockVb(GfxResourceID vb) { }
 *---------------------------------------------------------Matrices--------------------------------------------------------*
 *#########################################################################################################################*/
 static float texOffsetX, texOffsetY;
-static struct Matrix _view, _proj, _mvp;
+static struct Matrix _mvp;
+#ifndef CC_BUILD_Q2
+static struct Matrix _view, _proj;
+#endif
 
 void Gfx_LoadMatrix(MatrixType type, const struct Matrix* matrix) {
 	if (type == MATRIX_VIEW) _view = *matrix;
@@ -1628,6 +1677,7 @@ void DrawQuads(int startVertex, int verticesCount, DrawHints hints) {
 
 #ifdef CC_BUILD_Q2
 	if (gfx_rendering2D) Q2_Begin2D();
+	else if (q2_skyPending) Q2_SkyFill();
 #endif
 	if (gfx_rendering2D && (hints & (DRAW_HINT_SPRITE|DRAW_HINT_RECT))) {
 		// 4 vertices = 1 quad = 2 triangles

@@ -136,6 +136,19 @@ void EnvRenderer_UpdateFog(void) {
 
 	fogColor = CalcFog(&fogDensity);
 	Gfx_ClearColor(fogColor);
+#ifdef CC_BUILD_Q2
+	{
+		/* the sky as a gradient (Graphics_SoftGPU.c Q2_SkyFill), not underwater or in lava (their
+		 * own fog: the clear colour). A world with the default colours gets Minecraft's: its plains
+		 * sky overhead (#78A7FF) and its daytime fog at the horizon (#C0D8FF); another, its own sky
+		 * colour overhead and its fog colour at the horizon */
+		extern void Gfx_Q2SetSky(cc_bool on, PackedCol top, PackedCol horizon);
+		cc_bool defaults = Env.SkyCol == ENV_DEFAULT_SKY_COLOR && Env.FogCol == ENV_DEFAULT_FOG_COLOR;
+		Gfx_Q2SetSky(fogDensity == 0.0f,
+			defaults ? PackedCol_Make(0x78, 0xA7, 0xFF, 0xFF) : Env.SkyCol,
+			defaults ? PackedCol_Make(0xC0, 0xD8, 0xFF, 0xFF) : fogColor);
+	}
+#endif
 
 	if (EnvRenderer_Minimal) {
 		UpdateFogMinimal(fogDensity);

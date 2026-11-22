@@ -5,7 +5,7 @@
 #include "Core.h"
 #include "Bitmap.h"
 
-#define Q2_VERSION    "1.22"
+#define Q2_VERSION    "1.23"
 #define Q2_APP_DIR    "/mnt/mmc/.classicube"
 #define Q2_INPUT_SOCK "/tmp/q2-classicube.input.sock"
 #define Q2_OPT_UI_SCALE "q2-uiscale"
