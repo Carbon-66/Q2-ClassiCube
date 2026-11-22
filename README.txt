@@ -16,9 +16,6 @@ The first start makes a new world. It's saved when you leave, and every five min
 
 ## Controls
 
-| Control | In the game | In menus |
-| --- | --- | --- |
-| Wheel | Turn | Scroll |
 | Centre | Jump / swim up / fly up | Select |
 | Centre twice quickly | Fly on or off | |
 | Play/Pause | Fly down | Select |
@@ -36,11 +33,9 @@ Return closes it. You can tap the keys too.
 
 ## Features
 
-- Both processor cores draw the world, and hidden parts are skipped, so it runs at about 30 to 50
+- Both processor cores draw the world, and hidden parts are skipped, so it runs at about 30 to 60
   frames a second.
-- A Minecraft-style blue sky.
-- Block sounds and footsteps through headphones, Bluetooth or a USB DAC. Your music pauses while
-  you play.
+- Block sounds and footsteps through headphones, Bluetooth or a USB DAC.
 - Large menus, text and hotbar for the small screen.
 - Settings in **Pause → Options… → Graphics options**:
   - **View distance** (64 by default): lower is faster.
